@@ -1,0 +1,1031 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BeehiveScale v4.1 — Руководство пользователя</title>
+    <style>
+        :root {
+            --primary: #f5a623;
+            --primary-dark: #c17d0a;
+            --secondary: #2196F3;
+            --success: #4CAF50;
+            --warning: #FF9800;
+            --danger: #f44336;
+            --dark: #1a1a2e;
+            --card-bg: #16213e;
+            --card-bg2: #0f1a2e;
+            --text: #e8e8e8;
+            --text-muted: #a0a0a0;
+            --border: rgba(245,166,35,0.2);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: var(--text);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        header {
+            text-align: center;
+            padding: 50px 20px 40px;
+            background: linear-gradient(135deg, #c17d0a 0%, #f5a623 50%, #e8901a 100%);
+            border-radius: 20px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 40px rgba(245,166,35,0.3);
+            position: relative;
+            overflow: hidden;
+        }
+        header::before {
+            content: '';
+            position: absolute; top: -50%; left: -50%;
+            width: 200%; height: 200%;
+            background: radial-gradient(ellipse, rgba(255,255,255,0.1) 0%, transparent 60%);
+            animation: shimmer 4s ease-in-out infinite;
+        }
+        @keyframes shimmer { 0%,100%{transform:rotate(0deg)} 50%{transform:rotate(5deg)} }
+        header h1 { font-size: 2.8em; margin-bottom: 8px; color: #1a1a2e; position: relative; }
+        header .subtitle { font-size: 1.1em; color: #1a1a2e; opacity: 0.85; position: relative; }
+        header .badges { display: flex; gap: 10px; justify-content: center; margin-top: 15px; flex-wrap: wrap; position: relative; }
+        .badge { background: rgba(0,0,0,0.25); padding: 5px 14px; border-radius: 20px; font-size: 0.85em; color: #1a1a2e; font-weight: 600; }
+
+        .nav-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 25px; justify-content: center; }
+        .nav-tab {
+            padding: 12px 22px; background: var(--card-bg);
+            border: 2px solid transparent; border-radius: 10px;
+            cursor: pointer; transition: all 0.3s ease; font-size: 0.95em; color: var(--text);
+        }
+        .nav-tab:hover { border-color: var(--primary); transform: translateY(-2px); }
+        .nav-tab.active { background: var(--primary); border-color: var(--primary-dark); color: #1a1a2e; font-weight: 600; }
+
+        .section { display: none; animation: fadeIn 0.4s ease; }
+        .section.active { display: block; }
+        @keyframes fadeIn { from{opacity:0;transform:translateY(15px)} to{opacity:1;transform:translateY(0)} }
+
+        .card { background: var(--card-bg); border-radius: 15px; padding: 25px; margin-bottom: 20px; box-shadow: 0 5px 20px rgba(0,0,0,0.3); border: 1px solid var(--border); }
+        .card h2 { color: var(--primary); margin-bottom: 20px; font-size: 1.4em; display: flex; align-items: center; gap: 10px; }
+        .card h3 { color: #7ec8e3; margin: 20px 0 12px; font-size: 1.1em; }
+
+        .conn-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        .conn-table th { background: rgba(245,166,35,0.15); color: var(--primary); padding: 10px 14px; text-align: left; font-size: 0.9em; border-bottom: 2px solid var(--border); }
+        .conn-table td { padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.06); vertical-align: middle; }
+        .conn-table tr:hover td { background: rgba(255,255,255,0.03); }
+        .conn-table .from { font-family: 'Courier New', monospace; font-weight: bold; }
+        .conn-table .arrow { color: var(--primary); text-align: center; font-size: 1.2em; }
+        .conn-table .to { color: #7ec8e3; font-weight: 600; }
+        .conn-table .note { color: var(--text-muted); font-size: 0.85em; }
+        .col-gpio { background: rgba(245,166,35,0.12); color: var(--primary); font-family: monospace; font-size: 0.85em; padding: 3px 8px; border-radius: 4px; white-space: nowrap; }
+        .col-d { color: var(--text-muted); font-size: 0.85em; }
+
+        .comp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 15px; margin-top: 15px; }
+        .comp-card { background: var(--card-bg2); border-radius: 12px; padding: 20px; text-align: center; border: 2px solid transparent; transition: all 0.3s ease; }
+        .comp-card:hover { border-color: var(--primary); transform: translateY(-4px); }
+        .comp-icon { font-size: 2.8em; margin-bottom: 12px; }
+        .comp-card h4 { color: var(--text); margin-bottom: 6px; font-size: 1em; }
+        .comp-card p { font-size: 0.82em; color: var(--text-muted); line-height: 1.4; }
+        .comp-card .qty { display: inline-block; margin-top: 8px; background: rgba(245,166,35,0.15); color: var(--primary); padding: 2px 10px; border-radius: 10px; font-size: 0.8em; }
+
+        .steps { counter-reset: step; }
+        .step { display: flex; gap: 20px; margin-bottom: 20px; padding: 20px; background: rgba(255,255,255,0.03); border-radius: 12px; }
+        .step::before {
+            counter-increment: step; content: counter(step);
+            width: 48px; height: 48px; min-width: 48px;
+            background: linear-gradient(135deg, var(--primary-dark), var(--primary));
+            border-radius: 50%; display: flex; align-items: center; justify-content: center;
+            font-weight: bold; font-size: 1.3em; color: #1a1a2e;
+        }
+        .step-content { flex: 1; }
+        .step h4 { color: var(--text); margin-bottom: 8px; font-size: 1.1em; }
+        .step p, .step ul { color: var(--text-muted); }
+        .step ul { margin-left: 20px; margin-top: 6px; }
+        .step li { margin-bottom: 4px; }
+
+        .tip    { background: rgba(76,175,80,0.08);  border-left: 4px solid var(--success); padding: 14px; border-radius: 0 10px 10px 0; margin: 14px 0; }
+        .warn   { background: rgba(255,152,0,0.08);  border-left: 4px solid var(--warning); padding: 14px; border-radius: 0 10px 10px 0; margin: 14px 0; }
+        .danger { background: rgba(244,67,54,0.08);  border-left: 4px solid var(--danger);  padding: 14px; border-radius: 0 10px 10px 0; margin: 14px 0; }
+        .tip strong, .warn strong, .danger strong { display: block; margin-bottom: 4px; }
+
+        .lcd-screen { background: #1a2e1a; border: 3px solid #2a4a2a; border-radius: 8px; padding: 18px 22px; font-family: 'Courier New', monospace; display: inline-block; margin: 10px 0; box-shadow: inset 0 0 20px rgba(0,0,0,0.4), 0 0 15px rgba(50,150,50,0.1); }
+        .lcd-row { font-size: 1.3em; color: #7fff7f; line-height: 1.8; letter-spacing: 2px; white-space: pre; }
+        .lcd-row .hl { color: #ffff00; }
+
+        .diagram-wrap { background: #0a0f1e; border-radius: 15px; padding: 20px; overflow-x: auto; margin: 20px 0; border: 1px solid var(--border); }
+
+        .btn-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; margin-top: 15px; }
+        .btn-card { background: var(--card-bg2); border-radius: 12px; padding: 20px; text-align: center; border: 2px solid var(--border); transition: all 0.3s; }
+        .btn-card:hover { transform: translateY(-4px); border-color: var(--primary); }
+        .btn-card .btn-icon { font-size: 2.5em; margin-bottom: 10px; }
+        .btn-card h4 { color: var(--text); margin-bottom: 8px; }
+        .btn-card p { color: var(--text-muted); font-size: 0.88em; }
+        .btn-tag { display: inline-block; margin-top: 8px; background: rgba(245,166,35,0.15); color: var(--primary); padding: 3px 12px; border-radius: 10px; font-size: 0.82em; }
+
+        .screen-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; margin-top: 15px; }
+        .screen-item { background: var(--card-bg2); border-radius: 10px; padding: 16px; border-left: 3px solid var(--primary); }
+        .screen-item .screen-num { color: var(--primary); font-weight: bold; font-size: 0.85em; margin-bottom: 6px; }
+        .screen-item h4 { color: var(--text); margin-bottom: 8px; }
+        .screen-item p { color: var(--text-muted); font-size: 0.88em; }
+
+        .faq-item { border-bottom: 1px solid rgba(255,255,255,0.08); }
+        .faq-q { font-weight: bold; color: var(--primary); cursor: pointer; padding: 14px 0; display: flex; justify-content: space-between; align-items: center; }
+        .faq-q:hover { color: #ffc85a; }
+        .faq-a { padding: 0 0 14px; color: var(--text-muted); display: none; line-height: 1.7; }
+        .faq-a p { margin-bottom: 8px; }
+        .faq-item.open .faq-a { display: block; }
+        .faq-toggle { font-size: 1.4em; transition: transform 0.3s; flex-shrink: 0; margin-left: 15px; }
+        .faq-item.open .faq-toggle { transform: rotate(45deg); }
+
+        .eeprom-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        .eeprom-table th { background: rgba(245,166,35,0.15); color: var(--primary); padding: 9px 14px; text-align: left; border-bottom: 2px solid var(--border); font-size: 0.9em; }
+        .eeprom-table td { padding: 8px 14px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.88em; }
+        .eeprom-table td:first-child { font-family: monospace; color: #7ec8e3; }
+
+        code { background: rgba(0,0,0,0.35); padding: 2px 7px; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 0.9em; color: #f5a623; }
+
+        @media (max-width: 768px) {
+            header h1 { font-size: 1.9em; }
+            .nav-tab { padding: 10px 14px; font-size: 0.88em; }
+            .step { flex-direction: column; }
+            .step::before { width: 38px; height: 38px; min-width: 38px; font-size: 1em; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+
+<!-- HEADER -->
+<header>
+    <h1>🐝 BeehiveScale v4.1</h1>
+    <p class="subtitle">Умные весы для пчеловода — Руководство пользователя</p>
+    <div class="badges">
+        <span class="badge">NodeMCU ESP8266MOD</span>
+        <span class="badge">HX711 + тензодатчик</span>
+        <span class="badge">LCD 16×2 I2C</span>
+        <span class="badge">DS18B20 + DS3231</span>
+        <span class="badge">SD-карта (SPI)</span>
+        <span class="badge">Wi-Fi AP</span>
+    </div>
+</header>
+
+<!-- NAVIGATION -->
+<div class="nav-tabs">
+    <div class="nav-tab active" onclick="showSection('overview',this)">📋 Обзор</div>
+    <div class="nav-tab" onclick="showSection('components',this)">🔧 Компоненты</div>
+    <div class="nav-tab" onclick="showSection('pinout',this)">📌 Распиновка</div>
+    <div class="nav-tab" onclick="showSection('wiring',this)">🔌 Подключение</div>
+    <div class="nav-tab" onclick="showSection('firmware',this)">💾 Прошивка</div>
+    <div class="nav-tab" onclick="showSection('operation',this)">🖥️ Работа</div>
+    <div class="nav-tab" onclick="showSection('calibration',this)">⚖️ Калибровка</div>
+    <div class="nav-tab" onclick="showSection('webui',this)">🌐 Веб</div>
+    <div class="nav-tab" onclick="showSection('faq',this)">❓ FAQ</div>
+</div>
+
+<!-- ===== OVERVIEW ===== -->
+<div id="overview" class="section active">
+    <div class="card">
+        <h2>📋 Что такое BeehiveScale</h2>
+        <p>BeehiveScale — электронные весы для пчелиных ульев на базе NodeMCU ESP8266. Устройство непрерывно измеряет вес улья, температуру, заряд батареи и передаёт данные через встроенный веб-интерфейс. Подходит для контроля взятка, зимовки, отслеживания роения.</p>
+        <div class="comp-grid" style="margin-top:20px">
+            <div class="comp-card"><div class="comp-icon">⚖️</div><h4>Измерение веса</h4><p>Точность 0.01 кг. EMA-сглаживание. Авто-фиксация стабильного значения</p></div>
+            <div class="comp-card"><div class="comp-icon">🌡️</div><h4>Температура</h4><p>DS18B20 в улье + DS3231 RTC — температура воздуха</p></div>
+            <div class="comp-card"><div class="comp-icon">🌐</div><h4>Wi-Fi точка доступа</h4><p>Веб-интерфейс без роутера. SSID: BeehiveScale, пароль: 12345678</p></div>
+            <div class="comp-card"><div class="comp-icon">🔋</div><h4>Батарея</h4><p>Мониторинг Li-Ion 1S. Напряжение, %, предупреждение при &lt;10%</p></div>
+            <div class="comp-card"><div class="comp-icon">💤</div><h4>Deep Sleep</h4><p>Авто-сон через 3 мин бездействия. GPIO16 (D0) → RST для пробуждения</p></div>
+            <div class="comp-card"><div class="comp-icon">🕐</div><h4>Реальное время</h4><p>DS3231 RTC — точные дата/время без интернета</p></div>
+            <div class="comp-card"><div class="comp-icon">💾</div><h4>SD-карта (лог)</h4><p>Запись веса, температуры, батареи каждую минуту. CSV скачивается через Wi-Fi</p></div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>📟 Экраны LCD (7 штук, переключение кнопкой MENU)</h2>
+        <div class="screen-list">
+            <div class="screen-item">
+                <div class="screen-num">Экран 0 — Текущий вес</div>
+                <div class="lcd-screen">
+                    <div class="lcd-row">Ves: <span class="hl">25.40</span>*kg  </div>
+                    <div class="lcd-row">10:35:22  <span class="hl">W</span> </div>
+                </div>
+                <p style="margin-top:6px">* = показания стабильны, W = Wi-Fi OK</p>
+            </div>
+            <div class="screen-item">
+                <div class="screen-num">Экран 1 — Дельта веса</div>
+                <div class="lcd-screen">
+                    <div class="lcd-row">D:<span class="hl">+01.60</span>kg  </div>
+                    <div class="lcd-row">Pred:<span class="hl">23.80</span>kg</div>
+                </div>
+                <p style="margin-top:6px">D = текущий − предыдущий вес (со знаком). Pred = предыдущий (опорный) вес. Обновляется кнопкой «Save» в веб-интерфейсе.</p>
+            </div>
+            <div class="screen-item">
+                <div class="screen-num">Экран 2 — Батарея</div>
+                <div class="lcd-screen">
+                    <div class="lcd-row">Bat:<span class="hl">3.85</span>V <span class="hl"> 71</span>%</div>
+                    <div class="lcd-row">Li-Ion 1S       </div>
+                </div>
+                <p style="margin-top:6px">При &lt;10%: !! LOW BATTERY !!</p>
+            </div>
+            <div class="screen-item">
+                <div class="screen-num">Экран 3 — Температура</div>
+                <div class="lcd-screen">
+                    <div class="lcd-row">T:<span class="hl">28.5</span>C R:<span class="hl">22.1</span>C</div>
+                    <div class="lcd-row">H: <span class="hl">65.2</span> %    </div>
+                </div>
+                <p style="margin-top:6px">T = улей, R = RTC (воздух), H = влажность</p>
+            </div>
+            <div class="screen-item">
+                <div class="screen-num">Экран 4 — Дата и время</div>
+                <div class="lcd-screen">
+                    <div class="lcd-row"><span class="hl">2024-06-15</span>   </div>
+                    <div class="lcd-row">RTC OK          </div>
+                </div>
+            </div>
+            <div class="screen-item">
+                <div class="screen-num">Экран 5 — Статус</div>
+                <div class="lcd-screen">
+                    <div class="lcd-row">CF:<span class="hl">2280</span>      </div>
+                    <div class="lcd-row">W:<span class="hl">OK</span> N:<span class="hl">14</span>     </div>
+                </div>
+                <p style="margin-top:6px">CF = коэффициент, N = пробуждений</p>
+            </div>
+            <div class="screen-item">
+                <div class="screen-num">Экран 6 — Калибровка</div>
+                <div class="lcd-screen">
+                    <div class="lcd-row">CF:<span class="hl">2280.0</span>    </div>
+                    <div class="lcd-row">MAIN=Vojti      </div>
+                </div>
+                <p style="margin-top:6px">Нажмите MAIN для входа в режим подстройки CF</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== COMPONENTS ===== -->
+<div id="components" class="section">
+    <div class="card">
+        <h2>🔧 Список компонентов</h2>
+        <div class="comp-grid">
+            <div class="comp-card"><div class="comp-icon">📟</div><h4>NodeMCU ESP8266MOD</h4><p>Lolin NodeMCU. Процессор, Wi-Fi, управление схемой</p><span class="qty">× 1</span></div>
+            <div class="comp-card"><div class="comp-icon">⚖️</div><h4>HX711</h4><p>24-бит АЦП для тензодатчиков. Усиление 128</p><span class="qty">× 1</span></div>
+            <div class="comp-card"><div class="comp-icon">🏋️</div><h4>Тензодатчик</h4><p>Балочный или платформенный. 50–200 кг нагрузка</p><span class="qty">× 4</span></div>
+            <div class="comp-card"><div class="comp-icon">📺</div><h4>LCD 1602 I2C</h4><p>16×2 символов. PCF8574, адрес 0x27</p><span class="qty">× 1</span></div>
+            <div class="comp-card"><div class="comp-icon">🌡️</div><h4>DS18B20</h4><p>Цифровой термометр OneWire, −55…+125°C</p><span class="qty">× 1</span></div>
+            <div class="comp-card"><div class="comp-icon">🕐</div><h4>DS3231 RTC</h4><p>Часы реального времени I2C. Батарейка CR2032</p><span class="qty">× 1</span></div>
+            <div class="comp-card"><div class="comp-icon">🔘</div><h4>Кнопки тактовые</h4><p>MAIN (тара) и MENU (навигация). 6×6 мм</p><span class="qty">× 2</span></div>
+            <div class="comp-card"><div class="comp-icon">🔋</div><h4>Li-Ion 1S + TP4056</h4><p>Аккумулятор 3.7–4.2 В с зарядным модулем</p><span class="qty">× 1</span></div>
+            <div class="comp-card"><div class="comp-icon">💾</div><h4>Модуль SD-карты</h4><p>MicroSD SPI-модуль. CS, SCK, MISO, MOSI. FAT32</p><span class="qty">× 1</span></div>
+            <div class="comp-card"><div class="comp-icon">📐</div><h4>Резисторы</h4><p>4.7 кОм — DS18B20 pull-up<br>2 × 100 кОм — делитель батареи</p><span class="qty">× 3</span></div>
+        </div>
+        <div class="warn" style="margin-top:20px"><strong>⚠️ Питание LCD</strong>LCD 1602 работает от 5В. Подключайте к VIN (USB-питание NodeMCU), а не к 3V3.</div>
+    </div>
+</div>
+
+<!-- ===== PINOUT ===== -->
+<div id="pinout" class="section">
+    <div class="card">
+        <h2>📌 Распиновка NodeMCU ESP8266MOD</h2>
+        <p style="color:var(--text-muted);margin-bottom:20px">Пины обозначены как <code>GPIOxx (Dx)</code> — аппаратный номер и метка на плате.</p>
+
+        <div class="diagram-wrap">
+            <svg viewBox="0 0 760 430" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:760px;display:block;margin:0 auto">
+                <!-- Board -->
+                <rect x="255" y="20" width="250" height="390" rx="14" fill="#1a2a1a" stroke="#2a4a2a" stroke-width="2"/>
+                <rect x="263" y="28" width="234" height="374" rx="10" fill="#0f1f0f" stroke="#3a6a3a" stroke-width="1"/>
+                <text x="380" y="52" text-anchor="middle" fill="#4a8a4a" font-size="13" font-family="monospace" font-weight="bold">NodeMCU</text>
+                <text x="380" y="68" text-anchor="middle" fill="#3a6a3a" font-size="10" font-family="monospace">ESP8266MOD</text>
+                <!-- USB -->
+                <rect x="343" y="20" width="74" height="12" rx="4" fill="#2a2a5a" stroke="#4a4a8a" stroke-width="1.5"/>
+                <text x="380" y="30" text-anchor="middle" fill="#6a6aaa" font-size="8" font-family="monospace">USB</text>
+
+                <!-- LEFT side pins -->
+                <!-- connector lines -->
+                <line x1="150" y1="100" x2="263" y2="100" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="150" y1="130" x2="263" y2="130" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="150" y1="160" x2="263" y2="160" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="150" y1="190" x2="263" y2="190" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="150" y1="220" x2="263" y2="220" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="150" y1="250" x2="263" y2="250" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="150" y1="280" x2="263" y2="280" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="150" y1="310" x2="263" y2="310" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="150" y1="340" x2="263" y2="340" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="150" y1="370" x2="263" y2="370" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <!-- dots left -->
+                <circle cx="263" cy="100" r="5" fill="#f5a623"/>
+                <circle cx="263" cy="130" r="5" fill="#7fff7f"/>
+                <circle cx="263" cy="160" r="5" fill="#7ec8e3"/>
+                <circle cx="263" cy="190" r="5" fill="#7ec8e3"/>
+                <circle cx="263" cy="220" r="5" fill="#ff9988"/>
+                <circle cx="263" cy="250" r="5" fill="#ff9988"/>
+                <circle cx="263" cy="280" r="5" fill="#ffaa55"/>
+                <circle cx="263" cy="310" r="5" fill="#888"/>
+                <circle cx="263" cy="340" r="5" fill="#4a8f4a"/>
+                <circle cx="263" cy="370" r="5" fill="#4a8f4a"/>
+                <!-- board labels left -->
+                <text x="275" y="104" fill="#f5a623" font-size="10" font-family="monospace" font-weight="bold">A0</text>
+                <text x="275" y="134" fill="#7fff7f" font-size="10" font-family="monospace" font-weight="bold">D0</text>
+                <text x="275" y="164" fill="#7ec8e3" font-size="10" font-family="monospace" font-weight="bold">D1</text>
+                <text x="275" y="194" fill="#7ec8e3" font-size="10" font-family="monospace" font-weight="bold">D2</text>
+                <text x="275" y="224" fill="#ff9988" font-size="10" font-family="monospace" font-weight="bold">D3</text>
+                <text x="275" y="254" fill="#ff9988" font-size="10" font-family="monospace" font-weight="bold">D4</text>
+                <text x="275" y="284" fill="#ffaa55" font-size="10" font-family="monospace" font-weight="bold">3V3</text>
+                <text x="275" y="314" fill="#888"    font-size="10" font-family="monospace" font-weight="bold">GND</text>
+                <text x="275" y="344" fill="#4a8f4a" font-size="10" font-family="monospace" font-weight="bold">VIN</text>
+                <text x="275" y="374" fill="#4a8f4a" font-size="10" font-family="monospace" font-weight="bold">GND</text>
+                <!-- desc left -->
+                <text x="143" y="97"  text-anchor="end" fill="#e8e8e8" font-size="11">ADC — батарея (делитель)</text>
+                <text x="143" y="127" text-anchor="end" fill="#7fff7f" font-size="11">GPIO16 — HX711 DT (данные)</text>
+                <text x="143" y="157" text-anchor="end" fill="#7ec8e3" font-size="11">GPIO5 — I2C SCL</text>
+                <text x="143" y="187" text-anchor="end" fill="#7ec8e3" font-size="11">GPIO4 — I2C SDA</text>
+                <text x="143" y="217" text-anchor="end" fill="#ff9988" font-size="11">GPIO0 — кнопка MAIN ⚡</text>
+                <text x="143" y="247" text-anchor="end" fill="#ff9988" font-size="11">GPIO2 — кнопка MENU</text>
+                <text x="143" y="277" text-anchor="end" fill="#ffaa55" font-size="11">3.3В питание</text>
+                <text x="143" y="307" text-anchor="end" fill="#888"    font-size="11">GND</text>
+                <text x="143" y="337" text-anchor="end" fill="#4a8f4a" font-size="11">5В (USB-питание)</text>
+                <text x="143" y="367" text-anchor="end" fill="#888"    font-size="11">GND</text>
+
+                <!-- RIGHT side pins -->
+                <line x1="497" y1="100" x2="610" y2="100" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="497" y1="130" x2="610" y2="130" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="497" y1="160" x2="610" y2="160" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="497" y1="190" x2="610" y2="190" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="497" y1="220" x2="610" y2="220" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="497" y1="250" x2="610" y2="250" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="497" y1="280" x2="610" y2="280" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="497" y1="310" x2="610" y2="310" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="497" y1="340" x2="610" y2="340" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <line x1="497" y1="370" x2="610" y2="370" stroke="#2a3a2a" stroke-width="1" stroke-dasharray="4,3"/>
+                <!-- dots right -->
+                <circle cx="497" cy="100" r="5" fill="#55cc55"/>
+                <circle cx="497" cy="130" r="5" fill="#55cc55"/>
+                <circle cx="497" cy="160" r="5" fill="#aa88ff"/>
+                <circle cx="497" cy="190" r="5" fill="#55cc55"/>
+                <circle cx="497" cy="220" r="5" fill="#555"/>
+                <circle cx="497" cy="250" r="5" fill="#e8e8e8"/>
+                <circle cx="497" cy="280" r="5" fill="#888"/>
+                <circle cx="497" cy="310" r="5" fill="#888"/>
+                <circle cx="497" cy="340" r="5" fill="#555"/>
+                <circle cx="497" cy="370" r="5" fill="#555"/>
+                <!-- board labels right -->
+                <text x="484" y="104" text-anchor="end" fill="#55cc55" font-size="10" font-family="monospace" font-weight="bold">D5</text>
+                <text x="484" y="134" text-anchor="end" fill="#55cc55" font-size="10" font-family="monospace" font-weight="bold">D6</text>
+                <text x="484" y="164" text-anchor="end" fill="#aa88ff" font-size="10" font-family="monospace" font-weight="bold">D7</text>
+                <text x="484" y="194" text-anchor="end" fill="#55cc55" font-size="10" font-family="monospace" font-weight="bold">D8</text>
+                <text x="484" y="224" text-anchor="end" fill="#555"    font-size="10" font-family="monospace">RX</text>
+                <text x="484" y="254" text-anchor="end" fill="#e8e8e8" font-size="10" font-family="monospace" font-weight="bold">TX</text>
+                <text x="484" y="284" text-anchor="end" fill="#888"    font-size="10" font-family="monospace">GND</text>
+                <text x="484" y="314" text-anchor="end" fill="#888"    font-size="10" font-family="monospace">3V3</text>
+                <text x="484" y="344" text-anchor="end" fill="#555"    font-size="10" font-family="monospace">EN</text>
+                <text x="484" y="374" text-anchor="end" fill="#555"    font-size="10" font-family="monospace">RST</text>
+                <!-- desc right -->
+                <text x="617" y="97"  fill="#e8e8e8" font-size="11">GPIO14 — SD SCK (SPI)</text>
+                <text x="617" y="127" fill="#e8e8e8" font-size="11">GPIO12 — SD MISO (SPI)</text>
+                <text x="617" y="157" fill="#aaaaff" font-size="11">GPIO13 — SD MOSI + DS18B20</text>
+                <text x="617" y="187" fill="#e8e8e8" font-size="11">GPIO15 — SD CS (D8)</text>
+                <text x="617" y="217" fill="#555"    font-size="11">GPIO3 — UART RX</text>
+                <text x="617" y="247" fill="#e8e8e8" font-size="11">GPIO1 — HX711 SCK (TX)</text>
+                <text x="617" y="277" fill="#888"    font-size="11">GND</text>
+                <text x="617" y="307" fill="#888"    font-size="11">3.3В (дублирует левый)</text>
+                <text x="617" y="337" fill="#555"    font-size="11">Enable</text>
+                <text x="617" y="367" fill="#555"    font-size="11">Reset</text>
+
+                <!-- notes -->
+                <text x="380" y="395" text-anchor="middle" fill="#ff9988" font-size="9" font-family="'Segoe UI'">⚡ GPIO0 (D3) = Flash. GPIO1 (TX) = HX711 SCK, Serial отключён</text>
+            </svg>
+        </div>
+
+        <h3>Таблица пинов проекта</h3>
+        <table class="conn-table">
+            <thead><tr><th>Метка</th><th>GPIO</th><th>Направление</th><th>Назначение</th><th>Примечание</th></tr></thead>
+            <tbody>
+                <tr><td><span class="col-gpio">A0</span></td><td><span class="col-d">ADC</span></td><td>Вход (аналог)</td><td class="to">Делитель батареи</td><td class="note">0–3.2В, 10-бит (0–1023)</td></tr>
+                <tr><td><span class="col-gpio">D0</span></td><td><span class="col-d">GPIO16</span></td><td>Вход цифровой</td><td class="to">HX711 DT (данные)</td><td class="note">DT_PIN = 16. Перепаяно с D5</td></tr>
+                <tr><td><span class="col-gpio">D1</span></td><td><span class="col-d">GPIO5</span></td><td>I2C SCL</td><td class="to">LCD + DS3231</td><td class="note">Wire.begin(4, <b>5</b>)</td></tr>
+                <tr><td><span class="col-gpio">D2</span></td><td><span class="col-d">GPIO4</span></td><td>I2C SDA</td><td class="to">LCD + DS3231</td><td class="note">Wire.begin(<b>4</b>, 5)</td></tr>
+                <tr><td><span class="col-gpio">D3</span></td><td><span class="col-d">GPIO0</span></td><td>Вход цифровой</td><td class="to">Кнопка MAIN (тара)</td><td class="note">INPUT_PULLUP. Flash-кнопка на плате</td></tr>
+                <tr><td><span class="col-gpio">D4</span></td><td><span class="col-d">GPIO2</span></td><td>Вход цифровой</td><td class="to">Кнопка MENU</td><td class="note">INPUT_PULLUP. Встроенный LED</td></tr>
+                <tr><td><span class="col-gpio">TX</span></td><td><span class="col-d">GPIO1</span></td><td>Цифровой I/O</td><td class="to">HX711 SCK (тактирование)</td><td class="note">SCK_PIN = 1. Перепаяно с D6. Serial отключён!</td></tr>
+                <tr><td><span class="col-gpio">D5</span></td><td><span class="col-d">GPIO14</span></td><td>SPI SCK</td><td class="to">SD-карта SCK</td><td class="note">Аппаратный SPI</td></tr>
+                <tr><td><span class="col-gpio">D6</span></td><td><span class="col-d">GPIO12</span></td><td>SPI MISO</td><td class="to">SD-карта MISO</td><td class="note">Аппаратный SPI</td></tr>
+                <tr><td><span class="col-gpio">D7</span></td><td><span class="col-d">GPIO13</span></td><td>SPI MOSI / 1-Wire</td><td class="to">SD-карта MOSI + DS18B20 DATA</td><td class="note">Общий пин! Резистор 4.7кОм → 3V3</td></tr>
+                <tr><td><span class="col-gpio">D8</span></td><td><span class="col-d">GPIO15</span></td><td>SPI CS</td><td class="to">SD-карта CS</td><td class="note">SD_CS_PIN = 15</td></tr>
+                <tr><td><span class="col-gpio">3V3</span></td><td><span class="col-d">—</span></td><td>Питание 3.3В</td><td class="to">HX711, DS18B20, DS3231</td><td class="note">Макс. ~200 мА</td></tr>
+                <tr><td><span class="col-gpio">VIN</span></td><td><span class="col-d">—</span></td><td>Питание 5В</td><td class="to">LCD 1602 VCC</td><td class="note">От USB</td></tr>
+                <tr><td><span class="col-gpio">GND</span></td><td><span class="col-d">—</span></td><td>Земля</td><td class="to">Все компоненты</td><td class="note">Единая шина GND</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ===== WIRING ===== -->
+<div id="wiring" class="section">
+
+    <div class="card">
+        <h2>🔌 Общая схема подключения</h2>
+        <div class="diagram-wrap">
+            <svg viewBox="0 0 820 650" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:820px;display:block;margin:0 auto">
+                <!-- ---- NodeMCU ---- -->
+                <rect x="300" y="180" width="140" height="280" rx="10" fill="#0f1f0f" stroke="#3a6a3a" stroke-width="2"/>
+                <text x="370" y="200" text-anchor="middle" fill="#4a8a4a" font-size="12" font-weight="bold" font-family="monospace">NodeMCU</text>
+                <text x="370" y="214" text-anchor="middle" fill="#2a5a2a" font-size="9" font-family="monospace">ESP8266MOD</text>
+                <!-- Left pins MCU -->
+                <circle cx="300" cy="235" r="4" fill="#f5a623"/><text x="308" y="239" fill="#f5a623" font-size="9" font-family="monospace" font-weight="bold">A0</text>
+                <circle cx="300" cy="255" r="4" fill="#7fff7f"/><text x="308" y="259" fill="#7fff7f" font-size="9" font-family="monospace" font-weight="bold">D0(16)</text>
+                <circle cx="300" cy="275" r="4" fill="#7ec8e3"/><text x="308" y="279" fill="#7ec8e3" font-size="9" font-family="monospace" font-weight="bold">D1(5)</text>
+                <circle cx="300" cy="295" r="4" fill="#7ec8e3"/><text x="308" y="299" fill="#7ec8e3" font-size="9" font-family="monospace" font-weight="bold">D2(4)</text>
+                <circle cx="300" cy="315" r="4" fill="#ff9988"/><text x="308" y="319" fill="#ff9988" font-size="9" font-family="monospace" font-weight="bold">D3(0)</text>
+                <circle cx="300" cy="335" r="4" fill="#ff9988"/><text x="308" y="339" fill="#ff9988" font-size="9" font-family="monospace" font-weight="bold">D4(2)</text>
+                <circle cx="300" cy="355" r="4" fill="#ffaa55"/><text x="308" y="359" fill="#ffaa55" font-size="9" font-family="monospace" font-weight="bold">3V3</text>
+                <circle cx="300" cy="375" r="4" fill="#888"/><text x="308" y="379" fill="#888" font-size="9" font-family="monospace" font-weight="bold">GND</text>
+                <!-- Right pins MCU -->
+                <circle cx="440" cy="235" r="4" fill="#55cc55"/><text x="430" y="239" text-anchor="end" fill="#55cc55" font-size="9" font-family="monospace" font-weight="bold">D5(14)</text>
+                <circle cx="440" cy="255" r="4" fill="#55cc55"/><text x="430" y="259" text-anchor="end" fill="#55cc55" font-size="9" font-family="monospace" font-weight="bold">D6(12)</text>
+                <circle cx="440" cy="275" r="4" fill="#aa88ff"/><text x="430" y="279" text-anchor="end" fill="#aa88ff" font-size="9" font-family="monospace" font-weight="bold">D7(13)</text>
+                <circle cx="440" cy="295" r="4" fill="#55cc55"/><text x="430" y="299" text-anchor="end" fill="#55cc55" font-size="9" font-family="monospace" font-weight="bold">D8(15)</text>
+                <circle cx="440" cy="315" r="4" fill="#4a8f4a"/><text x="430" y="319" text-anchor="end" fill="#4a8f4a" font-size="9" font-family="monospace" font-weight="bold">VIN</text>
+                <circle cx="440" cy="335" r="4" fill="#888"/><text x="430" y="339" text-anchor="end" fill="#888" font-size="9" font-family="monospace" font-weight="bold">GND</text>
+                <circle cx="440" cy="395" r="4" fill="#e8e8e8"/><text x="430" y="399" text-anchor="end" fill="#e8e8e8" font-size="9" font-family="monospace" font-weight="bold">TX(1)</text>
+
+                <!-- ---- HX711 ---- -->
+                <rect x="60" y="60" width="110" height="100" rx="8" fill="#1a2a1a" stroke="#3a5a3a" stroke-width="1.5"/>
+                <text x="115" y="82" text-anchor="middle" fill="#7fff7f" font-size="12" font-weight="bold" font-family="monospace">HX711</text>
+                <text x="115" y="97" text-anchor="middle" fill="#2a5a2a" font-size="9" font-family="monospace">D0 + TX</text>
+                <circle cx="170" cy="117" r="3" fill="#7fff7f"/><text x="164" y="121" text-anchor="end" fill="#7fff7f" font-size="9" font-family="monospace">DT</text>
+                <circle cx="170" cy="132" r="3" fill="#e8e8e8"/><text x="164" y="136" text-anchor="end" fill="#e8e8e8" font-size="9" font-family="monospace">SCK</text>
+                <circle cx="170" cy="147" r="3" fill="#ffaa55"/><text x="164" y="151" text-anchor="end" fill="#ffaa55" font-size="9" font-family="monospace">VCC</text>
+                <circle cx="60" cy="117" r="3" fill="#888"/><text x="67" y="121" fill="#888" font-size="9" font-family="monospace">GND</text>
+                <!-- wires HX711: DT→D0(16), SCK→TX(1) -->
+                <path d="M170,117 L240,117 L240,255 L300,255" stroke="#7fff7f" stroke-width="1.8" fill="none"/>
+                <path d="M170,132 L245,132 L245,395 L440,395" stroke="#e8e8e8" stroke-width="1.8" fill="none"/>
+                <path d="M170,147 L250,147 L250,355 L300,355" stroke="#ffaa55" stroke-width="1.5" fill="none" stroke-dasharray="5,3"/>
+                <path d="M60,117 L40,117 L40,615" stroke="#555" stroke-width="1.5" fill="none" stroke-dasharray="6,4"/>
+
+                <!-- ---- SD-карта ---- -->
+                <rect x="560" y="60" width="120" height="110" rx="8" fill="#1a2a2a" stroke="#3a6a5a" stroke-width="1.5"/>
+                <text x="620" y="82" text-anchor="middle" fill="#55cc55" font-size="12" font-weight="bold" font-family="monospace">SD-карта</text>
+                <text x="620" y="97" text-anchor="middle" fill="#2a5a4a" font-size="9" font-family="monospace">SPI  FAT32</text>
+                <circle cx="560" cy="115" r="3" fill="#55cc55"/><text x="566" y="119" fill="#55cc55" font-size="9" font-family="monospace">CS</text>
+                <circle cx="560" cy="130" r="3" fill="#55cc55"/><text x="566" y="134" fill="#55cc55" font-size="9" font-family="monospace">SCK</text>
+                <circle cx="560" cy="145" r="3" fill="#55cc55"/><text x="566" y="149" fill="#55cc55" font-size="9" font-family="monospace">MISO</text>
+                <circle cx="560" cy="160" r="3" fill="#aa88ff"/><text x="566" y="164" fill="#aa88ff" font-size="9" font-family="monospace">MOSI</text>
+                <circle cx="680" cy="115" r="3" fill="#ffaa55"/><text x="674" y="119" text-anchor="end" fill="#ffaa55" font-size="9" font-family="monospace">VCC(3V3)</text>
+                <circle cx="680" cy="130" r="3" fill="#888"/><text x="674" y="134" text-anchor="end" fill="#888" font-size="9" font-family="monospace">GND</text>
+                <!-- wires SD: CS→D8(15), SCK→D5(14), MISO→D6(12), MOSI→D7(13) -->
+                <path d="M560,115 L500,115 L500,295 L440,295" stroke="#55cc55" stroke-width="1.8" fill="none"/>
+                <path d="M560,130 L505,130 L505,235 L440,235" stroke="#55cc55" stroke-width="1.8" fill="none"/>
+                <path d="M560,145 L510,145 L510,255 L440,255" stroke="#55cc55" stroke-width="1.8" fill="none"/>
+                <path d="M560,160 L515,160 L515,275 L440,275" stroke="#aa88ff" stroke-width="1.8" fill="none"/>
+                <path d="M680,115 L700,115 L700,175 L370,175 L370,180" stroke="#ffaa55" stroke-width="1.5" fill="none" stroke-dasharray="5,3"/>
+                <path d="M680,130 L710,130 L710,615" stroke="#555" stroke-width="1.5" fill="none" stroke-dasharray="6,4"/>
+
+                <!-- ---- LCD 1602 ---- -->
+                <rect x="560" y="210" width="120" height="90" rx="8" fill="#1a1a2a" stroke="#3a3a6a" stroke-width="1.5"/>
+                <text x="620" y="232" text-anchor="middle" fill="#7ec8e3" font-size="12" font-weight="bold" font-family="monospace">LCD 1602</text>
+                <text x="620" y="248" text-anchor="middle" fill="#5a6a8a" font-size="9" font-family="monospace">I2C  0x27  5В</text>
+                <circle cx="560" cy="268" r="3" fill="#7ec8e3"/><text x="566" y="272" fill="#7ec8e3" font-size="9" font-family="monospace">SCL</text>
+                <circle cx="560" cy="283" r="3" fill="#7ec8e3"/><text x="566" y="287" fill="#7ec8e3" font-size="9" font-family="monospace">SDA</text>
+                <circle cx="560" cy="298" r="3" fill="#4a8f4a"/><text x="566" y="302" fill="#4a8f4a" font-size="9" font-family="monospace">VCC (5В)</text>
+                <!-- wires LCD -->
+                <path d="M560,268 L470,268 L470,275 L300,275" stroke="#7ec8e3" stroke-width="1.8" fill="none"/>
+                <path d="M560,283 L475,283 L475,295 L300,295" stroke="#5ab8d3" stroke-width="1.8" fill="none"/>
+                <path d="M560,298 L520,298 L520,315 L440,315" stroke="#4a8f4a" stroke-width="1.5" fill="none" stroke-dasharray="5,3"/>
+
+                <!-- ---- DS3231 ---- -->
+                <rect x="560" y="340" width="110" height="90" rx="8" fill="#2a1a1a" stroke="#6a3a3a" stroke-width="1.5"/>
+                <text x="615" y="362" text-anchor="middle" fill="#ffaa77" font-size="12" font-weight="bold" font-family="monospace">DS3231</text>
+                <text x="615" y="377" text-anchor="middle" fill="#6a4a4a" font-size="9" font-family="monospace">RTC  I2C  0x68</text>
+                <circle cx="560" cy="393" r="3" fill="#7ec8e3"/><text x="566" y="397" fill="#7ec8e3" font-size="9" font-family="monospace">SCL</text>
+                <circle cx="560" cy="408" r="3" fill="#7ec8e3"/><text x="566" y="412" fill="#7ec8e3" font-size="9" font-family="monospace">SDA</text>
+                <circle cx="560" cy="423" r="3" fill="#ffaa55"/><text x="566" y="427" fill="#ffaa55" font-size="9" font-family="monospace">VCC (3V3)</text>
+                <!-- wires DS3231 (shared I2C bus) -->
+                <path d="M560,393 L468,393 L468,275" stroke="#7ec8e3" stroke-width="1.8" fill="none"/>
+                <path d="M560,408 L472,408 L472,295" stroke="#5ab8d3" stroke-width="1.8" fill="none"/>
+                <path d="M560,423 L525,423 L525,355 L300,355" stroke="#ffaa55" stroke-width="1.5" fill="none" stroke-dasharray="5,3"/>
+
+                <!-- ---- DS18B20 ---- -->
+                <rect x="560" y="470" width="120" height="80" rx="8" fill="#1a1a2a" stroke="#4a4a6a" stroke-width="1.5"/>
+                <text x="620" y="492" text-anchor="middle" fill="#aa88ff" font-size="12" font-weight="bold" font-family="monospace">DS18B20</text>
+                <text x="620" y="507" text-anchor="middle" fill="#5a5a8a" font-size="9" font-family="monospace">OneWire  D7(13) общий</text>
+                <circle cx="560" cy="527" r="3" fill="#aa88ff"/><text x="566" y="531" fill="#aa88ff" font-size="9" font-family="monospace">DATA</text>
+                <circle cx="560" cy="542" r="3" fill="#ffaa55"/><text x="566" y="546" fill="#ffaa55" font-size="9" font-family="monospace">VCC</text>
+                <!-- 4.7k pull-up -->
+                <rect x="520" y="518" width="36" height="16" rx="4" fill="#0f1f0f" stroke="#3a6a3a" stroke-width="1"/>
+                <text x="538" y="530" text-anchor="middle" fill="#7fff7f" font-size="7" font-family="monospace">4.7k</text>
+                <!-- wire DS18B20 data → D7 (shared with SD MOSI) -->
+                <line x1="560" y1="527" x2="556" y2="527" stroke="#aa88ff" stroke-width="1.5"/>
+                <path d="M520,527 L515,527 L515,275 L440,275" stroke="#aa88ff" stroke-width="1.5" fill="none"/>
+                <!-- pull-up to 3v3 -->
+                <line x1="538" y1="518" x2="538" y2="510" stroke="#ffaa55" stroke-width="1.2" stroke-dasharray="4,2"/>
+                <path d="M538,510 L525,510 L525,355" stroke="#ffaa55" stroke-width="1.2" fill="none" stroke-dasharray="4,2"/>
+                <!-- wire DS18B20 vcc -->
+                <path d="M560,542 L525,542 L525,423" stroke="#ffaa55" stroke-width="1.5" fill="none" stroke-dasharray="5,3"/>
+
+                <!-- ---- BUTTONS ---- -->
+                <rect x="60" y="220" width="110" height="55" rx="8" fill="#2a1a1a" stroke="#6a3a3a" stroke-width="1.5"/>
+                <text x="115" y="242" text-anchor="middle" fill="#ff9988" font-size="11" font-weight="bold" font-family="monospace">BTN MAIN</text>
+                <text x="115" y="258" text-anchor="middle" fill="#5a3a3a" font-size="9" font-family="monospace">D3 / GPIO0</text>
+                <path d="M170,235 L210,235 L210,315 L300,315" stroke="#ff9988" stroke-width="1.8" fill="none"/>
+                <path d="M170,248 L215,248 L215,375 L300,375" stroke="#555" stroke-width="1.2" fill="none" stroke-dasharray="5,3"/>
+
+                <rect x="60" y="300" width="110" height="55" rx="8" fill="#2a1a1a" stroke="#6a3a3a" stroke-width="1.5"/>
+                <text x="115" y="322" text-anchor="middle" fill="#ff9988" font-size="11" font-weight="bold" font-family="monospace">BTN MENU</text>
+                <text x="115" y="338" text-anchor="middle" fill="#5a3a3a" font-size="9" font-family="monospace">D4 / GPIO2</text>
+                <path d="M170,315 L220,315 L220,335 L300,335" stroke="#ff9988" stroke-width="1.8" fill="none"/>
+                <path d="M170,328 L218,328 L218,380 L300,380" stroke="#555" stroke-width="1.2" fill="none" stroke-dasharray="5,3"/>
+
+                <!-- ---- Battery divider ---- -->
+                <rect x="60" y="400" width="140" height="80" rx="8" fill="#2a2a1a" stroke="#6a6a3a" stroke-width="1.5"/>
+                <text x="130" y="420" text-anchor="middle" fill="#f5a623" font-size="11" font-weight="bold" font-family="monospace">BAT+ → делитель</text>
+                <text x="130" y="435" text-anchor="middle" fill="#888" font-size="9" font-family="monospace">R1=100k  R2=100k</text>
+                <text x="130" y="450" text-anchor="middle" fill="#f5a623" font-size="9" font-family="monospace">BAT+ → R1 → A0 → R2 → GND</text>
+                <text x="130" y="465" text-anchor="middle" fill="#888" font-size="9" font-family="monospace">4.2В → 2.1В на A0</text>
+                <path d="M200,435 L250,435 L250,235 L300,235" stroke="#f5a623" stroke-width="1.8" fill="none"/>
+
+                <!-- GND bus at bottom -->
+                <line x1="40" y1="615" x2="740" y2="615" stroke="#444" stroke-width="2" stroke-dasharray="8,4"/>
+                <text x="750" y="619" fill="#666" font-size="10" font-family="monospace">GND</text>
+                <line x1="300" y1="375" x2="300" y2="615" stroke="#444" stroke-width="1.2" stroke-dasharray="4,3"/>
+
+                <!-- Legend box -->
+                <rect x="60" y="530" width="360" height="65" rx="8" fill="rgba(0,0,0,0.4)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+                <text x="240" y="547" text-anchor="middle" fill="#888" font-size="10" font-weight="bold">Легенда проводов</text>
+                <line x1="75" y1="561" x2="115" y2="561" stroke="#7ec8e3" stroke-width="2"/><text x="123" y="565" fill="#7ec8e3" font-size="10">I2C (SCL/SDA)</text>
+                <line x1="75" y1="579" x2="115" y2="579" stroke="#ffaa55" stroke-width="2" stroke-dasharray="5,3"/><text x="123" y="583" fill="#ffaa55" font-size="10">Питание 3.3В/5В</text>
+                <line x1="230" y1="561" x2="270" y2="561" stroke="#55cc55" stroke-width="2"/><text x="278" y="565" fill="#55cc55" font-size="10">SD SPI</text>
+                <line x1="230" y1="579" x2="270" y2="579" stroke="#ff9988" stroke-width="2"/><text x="278" y="583" fill="#ff9988" font-size="10">Кнопки</text>
+                <line x1="340" y1="561" x2="380" y2="561" stroke="#7fff7f" stroke-width="2"/><text x="388" y="565" fill="#7fff7f" font-size="10">HX711</text>
+                <line x1="340" y1="579" x2="380" y2="579" stroke="#aa88ff" stroke-width="2"/><text x="388" y="583" fill="#aa88ff" font-size="10">DS18B20/MOSI</text>
+            </svg>
+        </div>
+    </div>
+
+    <!-- HX711 -->
+    <div class="card">
+        <h2>⚖️ HX711 — подключение тензодатчика</h2>
+        <table class="conn-table">
+            <thead><tr><th>HX711</th><th></th><th>NodeMCU</th><th>Описание</th></tr></thead>
+            <tbody>
+                <tr><td class="from">VCC</td><td class="arrow">→</td><td class="to">3V3</td><td class="note">Питание 3.3В</td></tr>
+                <tr><td class="from">GND</td><td class="arrow">→</td><td class="to">GND</td><td class="note">Общая земля</td></tr>
+                <tr><td class="from">DT (DATA)</td><td class="arrow">→</td><td class="to"><span class="col-gpio">D0</span> <span class="col-d">GPIO16</span></td><td class="note">Линия данных. DT_PIN = 16. Перепаяно с D5 под SD-карту</td></tr>
+                <tr><td class="from">SCK (CLK)</td><td class="arrow">→</td><td class="to"><span class="col-gpio">TX</span> <span class="col-d">GPIO1</span></td><td class="note">Тактирование. SCK_PIN = 1. Serial отключён в прошивке</td></tr>
+            </tbody>
+        </table>
+        <div class="tip"><strong>💡 Подключение 4 тензодатчиков</strong>Красный → E+, Чёрный → E−, Зелёный → A+, Белый → A−. Для одиночного датчика: E+/E−=питание, A+/A−=сигнал.</div>
+        <div class="warn"><strong>⚠️ HX711 перепаян на D0/TX</strong>Пины D5/D6 (GPIO14/GPIO12) освобождены под SPI SD-карты. HX711 перенесён на D0 (GPIO16) и TX (GPIO1). Serial Monitor через USB не работает — GPIO1 занят HX711.</div>
+    </div>
+
+    <!-- LCD -->
+    <div class="card">
+        <h2>📺 LCD 1602 I2C (адрес 0x27)</h2>
+        <table class="conn-table">
+            <thead><tr><th>LCD</th><th></th><th>NodeMCU</th><th>Описание</th></tr></thead>
+            <tbody>
+                <tr><td class="from">VCC</td><td class="arrow">→</td><td class="to">VIN (5В)</td><td class="note">Обязательно 5В — от VIN, не 3V3</td></tr>
+                <tr><td class="from">GND</td><td class="arrow">→</td><td class="to">GND</td><td class="note">Земля</td></tr>
+                <tr><td class="from">SCL</td><td class="arrow">→</td><td class="to"><span class="col-gpio">D1</span> <span class="col-d">GPIO5</span></td><td class="note">I2C тактирование</td></tr>
+                <tr><td class="from">SDA</td><td class="arrow">→</td><td class="to"><span class="col-gpio">D2</span> <span class="col-d">GPIO4</span></td><td class="note">I2C данные</td></tr>
+            </tbody>
+        </table>
+        <div class="warn"><strong>⚠️ Адрес I2C</strong>По умолчанию LCD_ADDR = 0x27. Если не работает — попробуйте 0x3F. Проверьте адрес I2C-сканером.</div>
+    </div>
+
+    <!-- DS3231 -->
+    <div class="card">
+        <h2>🕐 DS3231 RTC (адрес 0x68)</h2>
+        <table class="conn-table">
+            <thead><tr><th>DS3231</th><th></th><th>NodeMCU</th><th>Описание</th></tr></thead>
+            <tbody>
+                <tr><td class="from">VCC</td><td class="arrow">→</td><td class="to">3V3</td><td class="note">Питание 3.3В</td></tr>
+                <tr><td class="from">GND</td><td class="arrow">→</td><td class="to">GND</td><td class="note">Земля</td></tr>
+                <tr><td class="from">SCL</td><td class="arrow">→</td><td class="to"><span class="col-gpio">D1</span> <span class="col-d">GPIO5</span></td><td class="note">Та же шина I2C что и LCD</td></tr>
+                <tr><td class="from">SDA</td><td class="arrow">→</td><td class="to"><span class="col-gpio">D2</span> <span class="col-d">GPIO4</span></td><td class="note">Та же шина I2C что и LCD</td></tr>
+            </tbody>
+        </table>
+        <div class="tip"><strong>💡 CR2032</strong>Установите батарейку CR2032 в держатель DS3231 — часы не сбросятся при отключении питания.</div>
+    </div>
+
+    <!-- DS18B20 -->
+    <div class="card">
+        <h2>🌡️ DS18B20 — датчик температуры</h2>
+        <table class="conn-table">
+            <thead><tr><th>DS18B20</th><th></th><th>NodeMCU / Схема</th><th>Описание</th></tr></thead>
+            <tbody>
+                <tr><td class="from">VCC (красный)</td><td class="arrow">→</td><td class="to">3V3</td><td class="note">Питание 3.3В</td></tr>
+                <tr><td class="from">GND (чёрный)</td><td class="arrow">→</td><td class="to">GND</td><td class="note">Земля</td></tr>
+                <tr><td class="from">DATA (жёлтый)</td><td class="arrow">→</td><td class="to"><span class="col-gpio">D7</span> <span class="col-d">GPIO13</span></td><td class="note">OneWire. TEMP_PIN = 13</td></tr>
+                <tr><td class="from">DATA (жёлтый)</td><td class="arrow">также</td><td class="to">3V3 через 4.7 кОм</td><td class="note">Подтягивающий резистор обязателен!</td></tr>
+            </tbody>
+        </table>
+        <div class="danger"><strong>❌ Без резистора датчик не работает!</strong>Резистор 4.7 кОм между DATA и VCC (3.3В) обязателен для OneWire. Без него — ошибка или −127°C.</div>
+    </div>
+
+    <!-- SD Card -->
+    <div class="card">
+        <h2>💾 SD-карта (MicroSD SPI-модуль)</h2>
+        <table class="conn-table">
+            <thead><tr><th>SD-модуль</th><th></th><th>NodeMCU</th><th>Описание</th></tr></thead>
+            <tbody>
+                <tr><td class="from">VCC</td><td class="arrow">→</td><td class="to">3V3</td><td class="note">Питание 3.3В</td></tr>
+                <tr><td class="from">GND</td><td class="arrow">→</td><td class="to">GND</td><td class="note">Земля</td></tr>
+                <tr><td class="from">CS</td><td class="arrow">→</td><td class="to"><span class="col-gpio">D8</span> <span class="col-d">GPIO15</span></td><td class="note">Chip Select. SD_CS_PIN = 15</td></tr>
+                <tr><td class="from">SCK</td><td class="arrow">→</td><td class="to"><span class="col-gpio">D5</span> <span class="col-d">GPIO14</span></td><td class="note">SPI Clock (аппаратный)</td></tr>
+                <tr><td class="from">MISO</td><td class="arrow">→</td><td class="to"><span class="col-gpio">D6</span> <span class="col-d">GPIO12</span></td><td class="note">Master In, Slave Out</td></tr>
+                <tr><td class="from">MOSI</td><td class="arrow">→</td><td class="to"><span class="col-gpio">D7</span> <span class="col-d">GPIO13</span></td><td class="note">Master Out, Slave In. Общий с DS18B20!</td></tr>
+            </tbody>
+        </table>
+        <div class="warn"><strong>⚠️ GPIO13 (D7) — общий пин!</strong>MOSI SD-карты и DATA DS18B20 подключены к одному GPIO13. Это работает, т.к. SPI и OneWire не используются одновременно. Резистор 4.7 кОм (pull-up DS18B20) остаётся на месте.</div>
+        <div class="tip"><strong>💡 Формат карты</strong>MicroSD должна быть отформатирована в <strong>FAT32</strong>. Карты до 32 ГБ. Перед установкой — отформатировать на компьютере.</div>
+    </div>
+
+    <!-- Buttons -->
+    <div class="card">
+        <h2>🔘 Кнопки управления</h2>
+        <div class="tip"><strong>💡 Внешние резисторы не нужны</strong>Используется INPUT_PULLUP — встроенные резисторы NodeMCU. Кнопки подключаются напрямую: пин → GND.</div>
+        <table class="conn-table">
+            <thead><tr><th>Кнопка</th><th>Пин 1</th><th>Пин 2</th><th>Функция</th></tr></thead>
+            <tbody>
+                <tr><td class="from">MAIN (тара)</td><td><span class="col-gpio">D3</span> <span class="col-d">GPIO0</span></td><td>GND</td><td class="note">4× короткое = тара; длинное = калибровка</td></tr>
+                <tr><td class="from">MENU (навигация)</td><td><span class="col-gpio">D4</span> <span class="col-d">GPIO2</span></td><td>GND</td><td class="note">1× = смена экрана; 2× быстро = отмена тары</td></tr>
+            </tbody>
+        </table>
+        <div class="warn"><strong>⚠️ GPIO0 (D3) = Flash-кнопка</strong>При загрузке прошивки убедитесь что кнопка MAIN НЕ нажата — иначе плата войдёт в режим прошивки.</div>
+    </div>
+
+    <!-- Battery -->
+    <div class="card">
+        <h2>🔋 Делитель напряжения батареи</h2>
+        <p style="color:var(--text-muted);margin-bottom:15px">Li-Ion макс. 4.2В делится пополам двумя резисторами 100 кОм. На A0 попадает 2.1В — в пределах диапазона NodeMCU (0–3.2В).</p>
+        <div class="diagram-wrap">
+            <svg viewBox="0 0 520 120" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:520px;display:block;margin:0 auto">
+                <text x="25" y="45" fill="#f5a623" font-size="13" font-family="monospace" font-weight="bold">BAT+</text>
+                <text x="25" y="60" fill="#888" font-size="10" font-family="monospace">≤4.2В</text>
+                <line x1="75" y1="50" x2="120" y2="50" stroke="#f5a623" stroke-width="2"/>
+                <rect x="120" y="38" width="70" height="24" rx="5" fill="#1a2a1a" stroke="#3a6a3a" stroke-width="1.5"/>
+                <text x="155" y="54" text-anchor="middle" fill="#7fff7f" font-size="11" font-family="monospace">R1  100k</text>
+                <line x1="190" y1="50" x2="270" y2="50" stroke="#f5a623" stroke-width="2"/>
+                <circle cx="230" cy="50" r="6" fill="#f5a623"/>
+                <line x1="230" y1="50" x2="230" y2="80" stroke="#f5a623" stroke-width="2"/>
+                <rect x="200" y="78" width="60" height="24" rx="5" fill="rgba(245,166,35,0.2)" stroke="#f5a623" stroke-width="2"/>
+                <text x="230" y="94" text-anchor="middle" fill="#f5a623" font-size="13" font-family="monospace" font-weight="bold">A0</text>
+                <text x="230" y="115" text-anchor="middle" fill="#888" font-size="9" font-family="monospace">2.1В</text>
+                <rect x="270" y="38" width="70" height="24" rx="5" fill="#1a2a1a" stroke="#3a6a3a" stroke-width="1.5"/>
+                <text x="305" y="54" text-anchor="middle" fill="#7fff7f" font-size="11" font-family="monospace">R2  100k</text>
+                <line x1="340" y1="50" x2="400" y2="50" stroke="#888" stroke-width="2"/>
+                <text x="410" y="45" fill="#888" font-size="13" font-family="monospace" font-weight="bold">GND</text>
+                <text x="410" y="60" fill="#555" font-size="10" font-family="monospace">0В</text>
+                <text x="100" y="35" fill="#f5a623" font-size="9" font-family="monospace">4.2В</text>
+                <text x="345" y="35" fill="#888" font-size="9" font-family="monospace">0В</text>
+            </svg>
+        </div>
+        <div class="tip"><strong>💡 BAT− тоже на GND</strong>Отрицательный полюс батареи подключается к общей шине GND устройства.</div>
+    </div>
+
+    <!-- Deep Sleep -->
+    <div class="card">
+        <h2>💤 Пробуждение из Deep Sleep</h2>
+        <div class="warn"><strong>⚠️ D0 (GPIO16) занят HX711</strong>Перемычка D0→RST для автоматического пробуждения по таймеру <strong>невозможна</strong> — GPIO16 используется для HX711 DT. Пробуждение — только кнопкой RST на плате.</div>
+        <table class="conn-table">
+            <thead><tr><th>Способ</th><th>Как</th><th>Описание</th></tr></thead>
+            <tbody>
+                <tr>
+                    <td class="from">Кнопка RST</td>
+                    <td class="arrow">→</td>
+                    <td class="note">Нажмите кнопку Reset на плате NodeMCU. Устройство перезагрузится и начнёт работу</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ===== FIRMWARE ===== -->
+<div id="firmware" class="section">
+    <div class="card">
+        <h2>💾 Прошивка</h2>
+        <h3>Библиотеки Arduino (установить через Менеджер библиотек)</h3>
+        <table class="conn-table">
+            <thead><tr><th>Библиотека</th><th>Версия</th><th>Для чего</th></tr></thead>
+            <tbody>
+                <tr><td class="from">ESP8266 Arduino Core</td><td>3.x</td><td class="note">Добавить URL в Менеджер плат</td></tr>
+                <tr><td class="from">LiquidCrystal_I2C</td><td>1.1.2+</td><td class="note">LCD 16×2 I2C</td></tr>
+                <tr><td class="from">HX711 by bogde</td><td>0.7.5+</td><td class="note">АЦП тензодатчика</td></tr>
+                <tr><td class="from">OneWire</td><td>2.3+</td><td class="note">Шина DS18B20</td></tr>
+                <tr><td class="from">DallasTemperature</td><td>3.9+</td><td class="note">Датчик DS18B20</td></tr>
+                <tr><td class="from">RTClib by Adafruit</td><td>2.1+</td><td class="note">DS3231 RTC</td></tr>
+            </tbody>
+        </table>
+
+        <h3>Настройки Arduino IDE для NodeMCU</h3>
+        <div class="steps">
+            <div class="step">
+                <div class="step-content">
+                    <h4>Добавить поддержку ESP8266</h4>
+                    <p>Файл → Настройки → Дополнительные URL менеджера плат:</p>
+                    <p style="margin-top:8px"><code>https://arduino.esp8266.com/stable/package_esp8266com_index.json</code></p>
+                    <p style="margin-top:8px">Затем: Инструменты → Плата → Менеджер плат → найти «esp8266» → Установить</p>
+                </div>
+            </div>
+            <div class="step">
+                <div class="step-content">
+                    <h4>Выбрать плату</h4>
+                    <p>Инструменты → Плата → ESP8266 Boards → <strong>NodeMCU 1.0 (ESP-12E Module)</strong></p>
+                    <ul>
+                        <li>CPU Frequency: 80 MHz</li>
+                        <li>Flash Size: 4MB (FS:2MB OTA:1019KB)</li>
+                        <li>Upload Speed: 115200</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="step">
+                <div class="step-content">
+                    <h4>Открыть скетч и загрузить</h4>
+                    <p>Файл → Открыть → <code>BeehiveScale/BeehiveScale.ino</code><br>
+                    Инструменты → Порт → выбрать COM-порт → нажать «Загрузить» (→)</p>
+                    <div class="tip" style="margin-top:10px"><strong>💡 Кнопка Flash</strong>Если загрузка не начинается: зажмите D3 (Flash), нажмите RST, отпустите обе.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== OPERATION ===== -->
+<div id="operation" class="section">
+    <div class="card">
+        <h2>🖥️ Управление кнопками</h2>
+        <div class="btn-grid">
+            <div class="btn-card"><div class="btn-icon">🔘</div><h4>MAIN — 4× короткое</h4><p>Тарирование. Обнуляет вес. Сохраняет offset в EEPROM.</p><span class="btn-tag">4 нажатия за 3 сек</span></div>
+            <div class="btn-card"><div class="btn-icon">⏱️</div><h4>MAIN — долгое (&gt;1с)</h4><p>Запуск полной калибровки по эталонному грузу.</p><span class="btn-tag">удержание</span></div>
+            <div class="btn-card"><div class="btn-icon">📋</div><h4>MENU — 1×</h4><p>Переключение между 7 экранами LCD.</p><span class="btn-tag">короткое нажатие</span></div>
+            <div class="btn-card"><div class="btn-icon">↩️</div><h4>MENU — 2× быстро</h4><p>Отмена тарирования. Восстанавливает предыдущий offset.</p><span class="btn-tag">2 нажатия &lt;500 мс</span></div>
+            <div class="btn-card"><div class="btn-icon">🔧</div><h4>Экран #6 + MAIN</h4><p>Режим ручной подстройки CF с живым весом.</p><span class="btn-tag">из меню #6</span></div>
+        </div>
+
+        <h3 style="margin-top:25px">Ручная калибровка (Экран #6)</h3>
+        <table class="conn-table">
+            <thead><tr><th>Кнопка</th><th>Действие</th></tr></thead>
+            <tbody>
+                <tr><td class="from">MAIN короткое</td><td class="note">Сменить шаг: 10 → 1 → 0.1 → 10 ...</td></tr>
+                <tr><td class="from">MENU короткое</td><td class="note">CF + шаг (увеличить)</td></tr>
+                <tr><td class="from">MENU длинное</td><td class="note">CF − шаг (уменьшить)</td></tr>
+                <tr><td class="from">MAIN длинное</td><td class="note">Сохранить CF в EEPROM и выйти</td></tr>
+            </tbody>
+        </table>
+        <div class="tip" style="margin-top:15px"><strong>💡 Символ * на экране #0</strong>Появляется когда разброс веса за 6 измерений &lt;0.02 кг. Значение автоматически сохраняется.</div>
+    </div>
+
+    <div class="card">
+        <h2>📊 Экран #1 — Дельта веса</h2>
+        <p style="color:var(--text-muted);margin-bottom:15px">Показывает разницу между текущим и <strong>предыдущим</strong> весом. Удобно отслеживать прирост или убыль мёда за период.</p>
+        <div class="lcd-screen" style="margin-bottom:20px">
+            <div class="lcd-row">D:<span class="hl">+01.60</span>kg   </div>
+            <div class="lcd-row">Pred:<span class="hl">23.80</span>kg </div>
+        </div>
+        <table class="conn-table">
+            <thead><tr><th>Строка LCD</th><th>Значение</th></tr></thead>
+            <tbody>
+                <tr><td class="from">D: +1.60kg</td><td class="note">Текущий вес − предыдущий вес (со знаком + или −)</td></tr>
+                <tr><td class="from">Pred: 23.80kg</td><td class="note">Предыдущий (опорный) вес — точка отсчёта</td></tr>
+            </tbody>
+        </table>
+        <h3 style="margin-top:20px">Когда обновляется опорный вес</h3>
+        <table class="conn-table">
+            <thead><tr><th>Событие</th><th>Результат</th></tr></thead>
+            <tbody>
+                <tr><td class="from">Загрузка устройства</td><td class="note">Читается из EEPROM (адрес 30) — значение сохраняется между перезагрузками</td></tr>
+                <tr><td class="from">Кнопка «Save» в веб-интерфейсе</td><td class="note">Текущий вес становится новым опорным, дельта обнуляется</td></tr>
+                <tr><td class="from">Отправка Telegram-алерта</td><td class="note">Сбрасывается на текущий вес — следующая дельта считается от нуля</td></tr>
+            </tbody>
+        </table>
+        <div class="tip" style="margin-top:15px"><strong>💡 Пример использования</strong>После установки улья нажмите «Save» в веб-интерфейсе — зафиксируется начальный вес. Через неделю Экран #2 покажет точный прирост мёда за это время.</div>
+    </div>
+
+    <div class="card">
+        <h2>💤 Авто-сон (Deep Sleep)</h2>
+        <p style="color:var(--text-muted)">После 3 минут бездействия — автоматический переход в глубокий сон:</p>
+        <div class="steps" style="margin-top:15px">
+            <div class="step"><div class="step-content"><h4>LCD покажет сообщение</h4><div class="lcd-screen"><div class="lcd-row">Auto sleep...   </div><div class="lcd-row">Btn to wake up  </div></div></div></div>
+            <div class="step"><div class="step-content"><h4>Запись лога и отключение</h4><p>Лог записывается на SD-карту. Данные сохраняются в RTC-память и EEPROM. Wi-Fi и LCD отключаются.</p></div></div>
+            <div class="step"><div class="step-content"><h4>Пробуждение</h4><p>Нажмите кнопку <strong>RST</strong> на плате NodeMCU.</p></div></div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== CALIBRATION ===== -->
+<div id="calibration" class="section">
+    <div class="card">
+        <h2>⚖️ Первичная калибровка</h2>
+        <div class="steps">
+            <div class="step"><div class="step-content"><h4>Снять нагрузку</h4><p>Убедитесь, что платформа пустая. Включите устройство.</p></div></div>
+            <div class="step">
+                <div class="step-content">
+                    <h4>Запустить калибровку (MAIN долгое)</h4>
+                    <div class="lcd-screen"><div class="lcd-row">Ubrat gruz!     </div><div class="lcd-row">Zhmi knopku...  </div></div>
+                </div>
+            </div>
+            <div class="step">
+                <div class="step-content">
+                    <h4>Нажать MAIN — тара пустых весов</h4>
+                    <div class="lcd-screen"><div class="lcd-row">Polozh. 1 kg    </div><div class="lcd-row">Zhmi knopku...  </div></div>
+                </div>
+            </div>
+            <div class="step"><div class="step-content"><h4>Положить эталонный груз</h4><p>По умолчанию 1 кг. Масса настраивается в веб-интерфейсе (поле «Калибровочный груз, г»).</p></div></div>
+            <div class="step">
+                <div class="step-content">
+                    <h4>Нажать MAIN — сохранить</h4>
+                    <div class="lcd-screen"><div class="lcd-row">OK! Factor:     </div><div class="lcd-row"><span class="hl">2280.000</span>       </div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== WEB UI ===== -->
+<div id="webui" class="section">
+    <div class="card">
+        <h2>🌐 Веб-интерфейс</h2>
+        <div class="steps">
+            <div class="step"><div class="step-content"><h4>Подключиться к Wi-Fi</h4><p>Найдите сеть <strong>BeehiveScale</strong>, пароль: <strong>12345678</strong></p></div></div>
+            <div class="step"><div class="step-content"><h4>Открыть в браузере</h4><p><code>192.168.4.1</code></p></div></div>
+        </div>
+
+        <h3>API эндпоинты</h3>
+        <table class="conn-table">
+            <thead><tr><th>URL</th><th>Метод</th><th>Описание</th></tr></thead>
+            <tbody>
+                <tr><td class="from">/api/data</td><td>GET</td><td class="note">JSON: вес, температура, батарея, время и т.д.</td></tr>
+                <tr><td class="from">/api/tare</td><td>POST</td><td class="note">Тарировать весы</td></tr>
+                <tr><td class="from">/api/save</td><td>POST</td><td class="note">Сохранить текущий вес как опорный для дельты</td></tr>
+                <tr><td class="from">/api/settings</td><td>POST</td><td class="note">Сохранить настройки (alertDelta, calibWeight, emaAlpha)</td></tr>
+                <tr><td class="from">/api/log</td><td>GET</td><td class="note">Скачать CSV-лог с SD-карты (beehive_log.csv)</td></tr>
+                <tr><td class="from">/api/log/clear</td><td>POST</td><td class="note">Очистить лог на SD-карте</td></tr>
+            </tbody>
+        </table>
+
+        <h3>Пример ответа /api/data</h3>
+        <div style="background:#0a0f1e;border-radius:10px;padding:16px;font-family:'Courier New',monospace;font-size:0.88em;line-height:1.8;border:1px solid var(--border)">
+            <span style="color:#888">{</span><br>
+            &nbsp;&nbsp;<span style="color:#7ec8e3">"weight"</span>: <span style="color:#f5a623">25.40</span>,&nbsp;<span style="color:#555">// кг</span><br>
+            &nbsp;&nbsp;<span style="color:#7ec8e3">"savedWeight"</span>: <span style="color:#f5a623">23.80</span>,<br>
+            &nbsp;&nbsp;<span style="color:#7ec8e3">"prevWeight"</span>: <span style="color:#f5a623">23.80</span>,&nbsp;<span style="color:#555">// опорный для дельты</span><br>
+            &nbsp;&nbsp;<span style="color:#7ec8e3">"tempC"</span>: <span style="color:#f5a623">28.5</span>,<br>
+            &nbsp;&nbsp;<span style="color:#7ec8e3">"rtcTempC"</span>: <span style="color:#f5a623">22.1</span>,<br>
+            &nbsp;&nbsp;<span style="color:#7ec8e3">"batV"</span>: <span style="color:#f5a623">3.85</span>,<br>
+            &nbsp;&nbsp;<span style="color:#7ec8e3">"batPct"</span>: <span style="color:#f5a623">71</span>,<br>
+            &nbsp;&nbsp;<span style="color:#7ec8e3">"datetime"</span>: <span style="color:#7fff7f">"2024-06-15 10:35:22"</span>,<br>
+            &nbsp;&nbsp;<span style="color:#7ec8e3">"wifiOk"</span>: <span style="color:#aaaaff">true</span><br>
+            <span style="color:#888">}</span>
+        </div>
+        <div class="tip" style="margin-top:15px"><strong>💡 Кнопка Save</strong>Нажатие «Save» в веб-форме сохраняет текущий вес как новый предыдущий для дельты (Экран #1). Используйте после установки улья на весы.</div>
+    </div>
+</div>
+
+<!-- ===== FAQ ===== -->
+<div id="faq" class="section">
+    <div class="card">
+        <h2>❓ Частые вопросы</h2>
+
+        <div class="faq-item">
+            <div class="faq-q" onclick="toggleFaq(this)">LCD не отображает ничего или показывает квадраты <span class="faq-toggle">+</span></div>
+            <div class="faq-a">
+                <p><strong>1.</strong> LCD требует 5В на VCC — подключите к VIN (USB-питание), не к 3V3.</p>
+                <p><strong>2.</strong> Отрегулируйте контрастность — синий подстроечный резистор на обратной стороне I2C-адаптера LCD.</p>
+                <p><strong>3.</strong> Проверьте адрес I2C — в коде 0x27. Загрузите I2C-сканер и найдите реальный. Если 0x3F — измените LCD_ADDR.</p>
+                <p><strong>4.</strong> SDA → D2 (GPIO4), SCL → D1 (GPIO5).</p>
+            </div>
+        </div>
+
+        <div class="faq-item">
+            <div class="faq-q" onclick="toggleFaq(this)">Вес показывает 0.00 или мигает *** OSHIBKA! *** <span class="faq-toggle">+</span></div>
+            <div class="faq-a">
+                <p><strong>1.</strong> Проверьте HX711: DT → D0 (GPIO16), SCK → TX (GPIO1), VCC → 3V3, GND → GND.</p>
+                <p><strong>2.</strong> Попробуйте поменять местами A+ и A− тензодатчика.</p>
+                <p><strong>3.</strong> Сделайте тарирование: 4× нажатие MAIN.</p>
+            </div>
+        </div>
+
+        <div class="faq-item">
+            <div class="faq-q" onclick="toggleFaq(this)">Дельта (Экран #1) показывает 0 после перезагрузки <span class="faq-toggle">+</span></div>
+            <div class="faq-a">
+                <p>Исправлено в v4.1 — предыдущий вес хранится в отдельном EEPROM-слоте (адрес 30). Если дельта всё равно 0 — нажмите «Save» в веб-интерфейсе для явной установки предыдущего веса.</p>
+            </div>
+        </div>
+
+        <div class="faq-item">
+            <div class="faq-q" onclick="toggleFaq(this)">Устройство не просыпается после Deep Sleep <span class="faq-toggle">+</span></div>
+            <div class="faq-a">
+                <p>D0 (GPIO16) занят HX711, поэтому перемычка D0→RST невозможна. Пробуждение — только кнопкой <strong>RST</strong> на плате NodeMCU. Нажмите RST — устройство полностью перезагрузится.</p>
+            </div>
+        </div>
+
+        <div class="faq-item">
+            <div class="faq-q" onclick="toggleFaq(this)">Температура −127°C или ошибка <span class="faq-toggle">+</span></div>
+            <div class="faq-a">
+                <p>Отсутствует резистор 4.7 кОм между DATA (D7/GPIO13) и VCC (3.3В). Это обязательный компонент OneWire.</p>
+            </div>
+        </div>
+
+        <div class="faq-item">
+            <div class="faq-q" onclick="toggleFaq(this)">Wi-Fi сеть BeehiveScale не видна <span class="faq-toggle">+</span></div>
+            <div class="faq-a">
+                <p><strong>1.</strong> Устройство инициализируется 5–10 секунд после включения.</p>
+                <p><strong>2.</strong> На Экране #5 LCD должно показывать W:OK.</p>
+                <p><strong>3.</strong> В Connectivity.h должен быть определён <code>#define WIFI_MODE_AP</code>.</p>
+            </div>
+        </div>
+
+        <div class="faq-item">
+            <div class="faq-q" onclick="toggleFaq(this)">Проверка батареи блоком питания — какое напряжение подавать <span class="faq-toggle">+</span></div>
+            <div class="faq-a">
+                <p style="margin-bottom:10px">В схеме стоит делитель R1=R2=100 кОм — напряжение батареи делится на 2 перед подачей на A0.</p>
+                <p style="margin-bottom:12px"><strong>Вариант 1: блок питания на вход делителя</strong> (как реальная батарея) — рекомендуется:</p>
+                <table class="eeprom-table">
+                    <thead><tr><th>Напряжение БП</th><th>На A0 пине</th><th>Экран #5 покажет</th><th>% заряда</th></tr></thead>
+                    <tbody>
+                        <tr><td>3.0 В</td><td>1.5 В</td><td>3.0 В</td><td>0% (LOW)</td></tr>
+                        <tr><td>3.6 В</td><td>1.8 В</td><td>3.6 В</td><td>50%</td></tr>
+                        <tr><td>3.9 В</td><td>1.95 В</td><td>3.9 В</td><td>75%</td></tr>
+                        <tr><td>4.2 В</td><td>2.1 В</td><td>4.2 В</td><td>100%</td></tr>
+                    </tbody>
+                </table>
+                <p style="margin-top:12px"><strong>Вариант 2: напрямую на пин A0</strong> (без делителя) — рабочий диапазон 1.5–2.1 В:</p>
+                <table class="eeprom-table">
+                    <thead><tr><th>Напряжение на A0</th><th>Экран #5 покажет</th><th>% заряда</th></tr></thead>
+                    <tbody>
+                        <tr><td>1.5 В</td><td>3.0 В</td><td>0% (LOW)</td></tr>
+                        <tr><td>1.8 В</td><td>3.6 В</td><td>50%</td></tr>
+                        <tr><td>2.1 В</td><td>4.2 В</td><td>100%</td></tr>
+                    </tbody>
+                </table>
+                <p style="margin-top:10px;color:var(--danger)"><strong>⚠️ Максимум на A0 NodeMCU = 3.3 В — не превышать, иначе сгорит ADC!</strong></p>
+            </div>
+        </div>
+
+        <div class="faq-item">
+            <div class="faq-q" onclick="toggleFaq(this)">Скачать лог веса в CSV (SD-карта) <span class="faq-toggle">+</span></div>
+            <div class="faq-a">
+                <p>Данные записываются на <strong>SD-карту</strong> (MicroSD FAT32) по SPI.</p>
+                <p style="margin-top:8px"><strong>Интервал записи:</strong> каждую <strong>1 минуту</strong> + принудительно <strong>перед уходом в deep sleep</strong> (3 мин бездействия). Это гарантирует, что минимум 2–3 записи сохранятся за каждое включение.</p>
+                <p style="margin-top:8px"><strong>Формат строки:</strong></p>
+                <pre style="background:#0a0f1e;padding:10px;border-radius:6px;font-size:0.85em;margin:8px 0">datetime,weight_kg,temp_c,humidity_pct,bat_v
+2024-06-15 10:00:00,25.40,28.5,65.2,3.85</pre>
+                <p><strong>Скачать лог:</strong> подключитесь к Wi-Fi <code>BeehiveScale</code>, откройте в браузере <code>192.168.4.1/api/log</code> — файл <code>beehive_log.csv</code> скачается автоматически.</p>
+                <p style="margin-top:8px"><strong>Очистить лог:</strong> POST на <code>192.168.4.1/api/log/clear</code> или через curl: <code>curl -X POST http://192.168.4.1/api/log/clear</code></p>
+                <p style="margin-top:8px"><strong>Ротация:</strong> при достижении 100 КБ файл переименовывается в <code>log_old.csv</code>, начинается новый.</p>
+                <p style="margin-top:8px"><strong>Подключение SD:</strong> CS→D8 (GPIO15), SCK→D5 (GPIO14), MISO→D6 (GPIO12), MOSI→D7 (GPIO13). HX711 перепаян на D0/TX. Подробности — вкладка «Подключение».</p>
+                <p style="margin-top:8px"><strong>SD не работает?</strong> Проверьте: 1) карта FAT32; 2) пайка SPI-проводов; 3) GPIO13 общий с DS18B20 — конфликт маловероятен, но проверьте контакт.</p>
+            </div>
+        </div>
+
+        <div class="faq-item">
+            <div class="faq-q" onclick="toggleFaq(this)">Spike-фильтр — защита от помех <span class="faq-toggle">+</span></div>
+            <div class="faq-a">
+                <p>Если новое показание HX711 отличается от текущего EMA-значения более чем на <strong>5 кг</strong> — оно отбрасывается.</p>
+                <p style="margin-top:8px">В Serial Monitor: <code>[Spike] Rejected raw=31.40</code></p>
+                <p style="margin-top:8px">Порог задаётся константой <code>SPIKE_FILTER_KG 5.0f</code> в <code>BeehiveScale.ino</code>.</p>
+            </div>
+        </div>
+
+        <div class="faq-item">
+            <div class="faq-q" onclick="toggleFaq(this)">EEPROM карта адресов <span class="faq-toggle">+</span></div>
+            <div class="faq-a">
+                <table class="eeprom-table">
+                    <thead><tr><th>Адрес</th><th>Байт</th><th>Данные</th></tr></thead>
+                    <tbody>
+                        <tr><td>0</td><td>4</td><td>calibrationFactor (float)</td></tr>
+                        <tr><td>4</td><td>4</td><td>offset (long)</td></tr>
+                        <tr><td>8</td><td>4</td><td>lastSavedWeight (float) — авто-сохранение</td></tr>
+                        <tr><td>12</td><td>1</td><td>magic 0xA5</td></tr>
+                        <tr><td>13</td><td>4</td><td>alertDelta (float)</td></tr>
+                        <tr><td>17</td><td>4</td><td>calibWeight (float)</td></tr>
+                        <tr><td>21</td><td>4</td><td>emaAlpha (float)</td></tr>
+                        <tr><td>25</td><td>1</td><td>magic2 0xA6</td></tr>
+                        <tr><td>26</td><td>4</td><td>prevOffset (long) — для отмены тары</td></tr>
+                        <tr><td>30</td><td>4</td><td>prevWeight (float) — опорный вес дельты</td></tr>
+                        <tr><td>34–63</td><td>30</td><td>резерв</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+</div>
+
+<script>
+function showSection(id, el) {
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    if (el) el.classList.add('active');
+    window.scrollTo({top: 0, behavior: 'smooth'});
+}
+function toggleFaq(el) {
+    el.parentElement.classList.toggle('open');
+}
+document.addEventListener('keydown', function(e) {
+    const tabs = document.querySelectorAll('.nav-tab');
+    const active = Array.from(tabs).findIndex(t => t.classList.contains('active'));
+    if (e.key === 'ArrowRight' && active < tabs.length - 1) tabs[active + 1].click();
+    if (e.key === 'ArrowLeft'  && active > 0)              tabs[active - 1].click();
+});
+</script>
+</body>
+</html>

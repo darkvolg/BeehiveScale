@@ -1,0 +1,16 @@
+# IDE
+.vscode/
+*.code-workspace
+
+# Claude Code
+.claude/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Temp
+*.tmp
+*.bak
+*.jpg
+*.png
