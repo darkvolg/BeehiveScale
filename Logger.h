@@ -16,10 +16,15 @@
 
 // ─── API ──────────────────────────────────────────────────────────────────
 bool   log_init();
+// batPct: процент заряда батареи; если < 5 — запись пропускается (защита от разряда)
 void   log_append(const String &datetime, float weight, float tempC,
-                  float humidity, float batV);
+                  float humidity, float batV, int batPct = 100);
 void   log_clear();
 size_t log_size();
 bool   log_exists();
+// Свободное место на SD (байт); 0 если SD недоступна
+uint32_t log_free_space();
+// Парсит CSV и возвращает JSON-массив последних maxRows строк
+String   log_to_json(int maxRows = 200);
 
 #endif

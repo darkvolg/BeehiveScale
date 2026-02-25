@@ -137,3 +137,68 @@ void save_web_settings(float alertDelta, float calibWeight, float emaAlpha) {
   _emaAlpha = emaAlpha;
   _settingsLoaded = true;
 }
+
+// ─── Расширенные настройки (sleep, LCD BL, AP pass) ──────────────────────
+static uint32_t _sleepSec    = 900UL;
+static uint16_t _lcdBlSec    = 30;
+static char     _apPass[24]  = "12345678";
+static bool     _extLoaded   = false;
+
+void ext_settings_init() {
+  if (_extLoaded) return;
+  // Проверяем magic3 — хранится в первом байте EEPROM_ADDR_AP_PASS+23
+  // Используем отдельную ячейку для magic3: запишем флаг в конец блока AP пароля
+  // magic3 хранится по адресу EEPROM_ADDR_AP_PASS + 23 (последний байт 24-байтного поля)
+  // Но лучше использовать отдельный байт: addr = EEPROM_ADDR_AP_PASS - 1 = 39... нет, 40-1=39
+  // Используем байт по адресу 63 как magic3
+  byte magic3 = 0;
+  EEPROM.get(63, magic3);
+  if (magic3 != EEPROM_MAGIC3_VALUE) {
+    _sleepSec = 900UL;
+    _lcdBlSec = 30;
+    strncpy(_apPass, "12345678", sizeof(_apPass));
+  } else {
+    EEPROM.get(EEPROM_ADDR_SLEEP_SEC, _sleepSec);
+    EEPROM.get(EEPROM_ADDR_LCD_BL_SEC, _lcdBlSec);
+    EEPROM.get(EEPROM_ADDR_AP_PASS, _apPass);
+    _apPass[23] = '\0';  // гарантируем нуль-терминатор
+
+    if (_sleepSec < 30UL || _sleepSec > 86400UL) _sleepSec = 900UL;
+    if (_lcdBlSec > 3600) _lcdBlSec = 30;
+    if (_apPass[0] == '\0' || strlen(_apPass) < 8) strncpy(_apPass, "12345678", sizeof(_apPass));
+  }
+  _extLoaded = true;
+}
+
+static void _ext_save() {
+  EEPROM.put(EEPROM_ADDR_SLEEP_SEC, _sleepSec);
+  EEPROM.put(EEPROM_ADDR_LCD_BL_SEC, _lcdBlSec);
+  EEPROM.put(EEPROM_ADDR_AP_PASS, _apPass);
+  byte magic3 = EEPROM_MAGIC3_VALUE;
+  EEPROM.put(63, magic3);
+  EEPROM.commit();
+}
+
+uint32_t get_sleep_sec() { if (!_extLoaded) ext_settings_init(); return _sleepSec; }
+void set_sleep_sec(uint32_t sec) {
+  if (sec < 30UL || sec > 86400UL) return;
+  _sleepSec = sec; _ext_save();
+}
+
+uint16_t get_lcd_bl_sec() { if (!_extLoaded) ext_settings_init(); return _lcdBlSec; }
+void set_lcd_bl_sec(uint16_t sec) {
+  _lcdBlSec = sec; _ext_save();
+}
+
+void get_ap_pass(char *buf, size_t maxLen) {
+  if (!_extLoaded) ext_settings_init();
+  strncpy(buf, _apPass, maxLen - 1);
+  buf[maxLen - 1] = '\0';
+}
+
+void set_ap_pass(const char *pass) {
+  if (!pass || strlen(pass) < 8 || strlen(pass) > 23) return;
+  strncpy(_apPass, pass, sizeof(_apPass) - 1);
+  _apPass[sizeof(_apPass) - 1] = '\0';
+  _ext_save();
+}

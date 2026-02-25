@@ -49,8 +49,13 @@ bool log_init() {
 }
 
 void log_append(const String &datetime, float weight, float tempC,
-                float humidity, float batV) {
+                float humidity, float batV, int batPct) {
   if (!fs_ok()) return;
+  // Защита от записи при критически низком заряде батареи
+  if (batPct < 5) {
+    Serial.println(F("[Log] Skip: low battery"));
+    return;
+  }
 
   // Ротация: если файл > LOG_MAX_SIZE, переименовать и начать новый
   if (log_size() >= LOG_MAX_SIZE) {
@@ -100,4 +105,87 @@ size_t log_size() {
 bool log_exists() {
   if (!fs_ok()) return false;
   return FS_OBJ.exists(LOG_FILE);
+}
+
+uint32_t log_free_space() {
+#ifdef USE_SD_CARD
+  if (!fs_ok()) return 0;
+  return (uint32_t)(SD.totalBytes() - SD.usedBytes());
+#else
+  if (!fs_ok()) return 0;
+  FSInfo info;
+  if (FS_OBJ.info(info)) {
+    return (uint32_t)(info.totalBytes - info.usedBytes);
+  }
+  return 0;
+#endif
+}
+
+// Парсит CSV-лог и возвращает JSON-массив для графика/экспорта
+// Формат CSV: datetime,weight_kg,temp_c,humidity_pct,bat_v
+String log_to_json(int maxRows) {
+  if (!fs_ok() || !FS_OBJ.exists(LOG_FILE)) return "[]";
+#ifdef USE_SD_CARD
+  FS_FILE f = FS_OBJ.open(LOG_FILE, FILE_READ);
+#else
+  FS_FILE f = FS_OBJ.open(LOG_FILE, "r");
+#endif
+  if (!f) return "[]";
+
+  // Сначала считаем строки чтобы пропустить лишние
+  int totalLines = 0;
+  while (f.available()) {
+    char c = f.read();
+    if (c == '\n') totalLines++;
+  }
+  f.seek(0);
+
+  // Пропускаем заголовок
+  f.readStringUntil('\n');
+  int dataLines = totalLines - 1;  // минус заголовок
+  int skipLines = (dataLines > maxRows) ? (dataLines - maxRows) : 0;
+
+  String out = "[";
+  bool first = true;
+  int lineIdx = 0;
+
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) continue;
+    if (lineIdx++ < skipLines) continue;
+
+    // Парсим: datetime,weight,temp,hum,batV
+    int c1 = line.indexOf(',');
+    if (c1 < 0) continue;
+    int c2 = line.indexOf(',', c1+1);
+    if (c2 < 0) continue;
+    int c3 = line.indexOf(',', c2+1);
+    if (c3 < 0) continue;
+    int c4 = line.indexOf(',', c3+1);
+    if (c4 < 0) continue;
+
+    String dt  = line.substring(0, c1);
+    String wgt = line.substring(c1+1, c2);
+    String tmp = line.substring(c2+1, c3);
+    String hum = line.substring(c3+1, c4);
+    String bat = line.substring(c4+1);
+
+    if (!first) out += ',';
+    out += F("{\"dt\":\"");
+    out += dt;
+    out += F("\",\"w\":");
+    out += wgt;
+    out += F(",\"t\":");
+    out += tmp;
+    out += F(",\"h\":");
+    out += hum;
+    out += F(",\"b\":");
+    out += bat;
+    out += '}';
+    first = false;
+  }
+  f.close();
+  out += ']';
+  return out;
 }

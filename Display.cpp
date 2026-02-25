@@ -25,3 +25,26 @@ void lcd_print_padded(LiquidCrystal_I2C &lcd, const char* text) {
 void lcd_print_padded(LiquidCrystal_I2C &lcd, const String &text) {
   lcd_print_padded(lcd, text.c_str());
 }
+
+static unsigned long _blLastActivity = 0;
+static bool _blOn = true;
+
+void lcd_backlight_activity(LiquidCrystal_I2C &lcd) {
+  _blLastActivity = millis();
+  if (!_blOn) {
+    lcd.backlight();
+    _blOn = true;
+  }
+}
+
+void lcd_backlight_tick(LiquidCrystal_I2C &lcd, uint16_t timeoutSec) {
+  if (timeoutSec == 0) {
+    // Всегда включена
+    if (!_blOn) { lcd.backlight(); _blOn = true; }
+    return;
+  }
+  if (_blOn && (millis() - _blLastActivity >= (unsigned long)timeoutSec * 1000UL)) {
+    lcd.noBacklight();
+    _blOn = false;
+  }
+}

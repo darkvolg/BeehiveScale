@@ -167,6 +167,7 @@ void setup() {
   load_calibration_data(sys.calibrationFactor, sys.offset, sys.lastSavedWeight);
   sys.prevOffset = load_prev_offset();
   web_settings_init();
+  ext_settings_init();
   // prevWeight: из RTC RAM (deep sleep) или из отдельного EEPROM-слота (холодный старт)
   // ВАЖНО: используем EEPROM_ADDR_PREV_WEIGHT, а не ADDR_WEIGHT —
   // авто-фиксация перезаписывает ADDR_WEIGHT, что обнуляло бы дельту при перезагрузке.
@@ -228,6 +229,7 @@ void start_webserver() {
     save_weight(sys.lastSavedWeight, sys.smoothedWeight);
     save_prev_weight(sys.prevWeight);
   };
+  wa.onActivity = []() { lcd_backlight_activity(lcd); };
 
   webserver_init(wd, wa);
   webServerStarted = true;
@@ -263,9 +265,11 @@ void loop() {
 
   if (now - lastLogWrite >= LOG_INTERVAL_MS) {
     log_append(sys.datetimeStr, sys.smoothedWeight,
-               sys.tempData.temperature, sys.tempData.humidity, sys.batVoltage);
+               sys.tempData.temperature, sys.tempData.humidity, sys.batVoltage, sys.batPercent);
     lastLogWrite = now;
   }
+
+  lcd_backlight_tick(lcd, get_lcd_bl_sec());
 
   if (sys.currentTime.valid) {
     sys.datetimeStr = rtc_format_datetime(sys.currentTime);
@@ -314,7 +318,7 @@ void loop() {
   persist.lastTempC = sys.tempData.temperature;
   persist.wakeupCount++;
   sleep_save_persistent(persist);
-  sleep_enter(SLEEP_INTERVAL_SEC);
+  sleep_enter(get_sleep_sec());
 #endif
 }
 
@@ -327,6 +331,7 @@ void handle_buttons() {
 
   if (actMain != NO_ACTION || actMenu != NO_ACTION) {
     lastActivityTime = millis();
+    lcd_backlight_activity(lcd);
   }
 
   if (actMain == SHORT_PRESS) {

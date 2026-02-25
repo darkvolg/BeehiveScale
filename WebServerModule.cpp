@@ -232,6 +232,27 @@ input:focus,select:focus{border-color:var(--amber)}
       <div class="status-lbl">Батарея</div>
       <div class="status-val" id="bat-val">__BATV__V (__BATP__%)</div>
     </div>
+    <div class="status-row">
+      <div class="dot __SDDOT__" id="sd-dot"></div>
+      <div class="status-lbl">SD-карта</div>
+      <div class="status-val" id="sd-val">__SDLOG__ KB лог / __SDFREE__ KB своб.</div>
+    </div>
+  </div>
+
+  <!-- CHART CARD -->
+  <div class="card full" id="chart-card">
+    <div class="card-title">📈 График веса (последние 24 ч)</div>
+    <div class="chart-area" style="height:120px" id="chart-wrap">
+      <svg id="chart-svg" class="chart-svg" viewBox="0 0 400 100" preserveAspectRatio="none">
+        <text x="200" y="55" text-anchor="middle" fill="#506040" font-size="10">Загрузка...</text>
+      </svg>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3);margin-top:4px">
+      <span id="chart-min-t"></span><span id="chart-mid-t"></span><span id="chart-max-t"></span>
+    </div>
+    <div style="font-size:10px;color:var(--text3);margin-top:4px">
+      Мин: <b id="chart-wmin">--</b> кг &nbsp;|&nbsp; Макс: <b id="chart-wmax">--</b> кг &nbsp;|&nbsp; Точек: <b id="chart-pts">0</b>
+    </div>
   </div>
 
   <!-- DATETIME CARD -->
@@ -276,6 +297,18 @@ input:focus,select:focus{border-color:var(--amber)}
       <label>EMA сглаживание (0.05 – 0.9)</label>
       <input type="number" id="cfg-ema" value="__EMA__" step="0.05" min="0.05" max="0.9">
     </div>
+    <div class="form-row">
+      <label>Интервал сна deep sleep (сек, 30–86400)</label>
+      <input type="number" id="cfg-sleep" value="__SLPSEC__" step="60" min="30" max="86400">
+    </div>
+    <div class="form-row">
+      <label>Таймаут подсветки LCD (сек, 0=всегда)</label>
+      <input type="number" id="cfg-bl" value="__BLSEC__" step="10" min="0" max="3600">
+    </div>
+    <div class="form-row">
+      <label>Пароль Wi-Fi AP (8–23 символа)</label>
+      <input type="password" id="cfg-appass" value="__APPASS__" minlength="8" maxlength="23" autocomplete="new-password">
+    </div>
     <div class="form-actions">
       <button class="btn btn-green" onclick="saveSettings()">💾 Сохранить</button>
     </div>
@@ -316,6 +349,10 @@ input:focus,select:focus{border-color:var(--amber)}
       <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border);font-size:11px">
         <div style="color:var(--red)">POST /api/reboot</div>
         <div style="color:var(--text3);margin-top:3px">Перезагрузить ESP32</div>
+      </div>
+      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border);font-size:11px">
+        <div style="color:var(--green)">GET /api/log/json</div>
+        <div style="color:var(--text3);margin-top:3px">Лог в JSON (для HA/Grafana)</div>
       </div>
     </div>
   </div>
@@ -379,12 +416,82 @@ function doDownload(url) {
   window.open(url, '_blank');
 }
 
+// ── SVG Chart ─────────────────────────────────────────────────────────
+function renderChart(data) {
+  const svg = document.getElementById('chart-svg');
+  if (!data || data.length === 0) {
+    svg.innerHTML = '<text x="200" y="55" text-anchor="middle" fill="#506040" font-size="10">Нет данных</text>';
+    return;
+  }
+  // Фильтруем последние 24ч
+  const now = Date.now();
+  const pts = data.filter(d => {
+    // dt формат: "DD.MM.YYYY HH:MM:SS" или ISO
+    return true; // берём всё что есть
+  });
+  if (pts.length === 0) return;
+
+  const weights = pts.map(d => parseFloat(d.w));
+  let wMin = Math.min(...weights);
+  let wMax = Math.max(...weights);
+  if (wMax === wMin) { wMin -= 0.1; wMax += 0.1; }
+
+  document.getElementById('chart-wmin').textContent = wMin.toFixed(2);
+  document.getElementById('chart-wmax').textContent = wMax.toFixed(2);
+  document.getElementById('chart-pts').textContent  = pts.length;
+
+  const W = 400, H = 100, PAD = 8;
+  const xScale = (i) => PAD + (i / (pts.length - 1 || 1)) * (W - PAD*2);
+  const yScale = (w) => H - PAD - ((w - wMin) / (wMax - wMin)) * (H - PAD*2);
+
+  // Сетка
+  let svgHtml = '<line x1="'+PAD+'" y1="'+(H/2)+'" x2="'+(W-PAD)+'" y2="'+(H/2)+'" stroke="#2e3829" stroke-width="1"/>';
+  // Заливка
+  let area = 'M '+xScale(0)+' '+H;
+  let line = 'M '+xScale(0)+' '+yScale(weights[0]);
+  for (let i = 0; i < pts.length; i++) {
+    const x = xScale(i), y = yScale(weights[i]);
+    area += ' L '+x+' '+y;
+    if (i > 0) line += ' L '+x+' '+y;
+  }
+  area += ' L '+xScale(pts.length-1)+' '+H+' Z';
+  svgHtml += '<path d="'+area+'" fill="rgba(245,166,35,0.15)" stroke="none"/>';
+  svgHtml += '<path d="'+line+'" fill="none" stroke="#f5a623" stroke-width="1.5"/>';
+  // Текущая точка
+  const lx = xScale(pts.length-1), ly = yScale(weights[weights.length-1]);
+  svgHtml += '<circle cx="'+lx+'" cy="'+ly+'" r="3" fill="#f5a623"/>';
+
+  svg.innerHTML = svgHtml;
+
+  // Временные метки (первая, средняя, последняя)
+  if (pts.length > 0) {
+    document.getElementById('chart-min-t').textContent = pts[0].dt ? pts[0].dt.substring(0,16) : '';
+    const mid = Math.floor(pts.length/2);
+    document.getElementById('chart-mid-t').textContent = pts[mid] ? pts[mid].dt.substring(0,16) : '';
+    document.getElementById('chart-max-t').textContent = pts[pts.length-1].dt ? pts[pts.length-1].dt.substring(0,16) : '';
+  }
+}
+
+function loadChart() {
+  fetch('/api/log/json')
+    .then(r => r.json())
+    .then(d => renderChart(d))
+    .catch(() => {});
+}
+// Загружаем график при старте и каждые 5 минут
+loadChart();
+setInterval(loadChart, 300000);
+
 function saveSettings() {
+  const apPass = document.getElementById('cfg-appass').value;
   const body = {
     alertDelta: parseFloat(document.getElementById('cfg-alert').value),
     calibWeight: parseFloat(document.getElementById('cfg-calib').value),
-    emaAlpha: parseFloat(document.getElementById('cfg-ema').value)
+    emaAlpha: parseFloat(document.getElementById('cfg-ema').value),
+    sleepSec: parseInt(document.getElementById('cfg-sleep').value),
+    lcdBlSec: parseInt(document.getElementById('cfg-bl').value)
   };
+  if (apPass.length >= 8) body.apPass = apPass;
   fetch('/api/settings', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
@@ -427,6 +534,11 @@ function fetchData() {
         document.getElementById('bat-val').textContent = d.batV.toFixed(2) + 'V (' + d.batPct + '%)';
         const bd = document.getElementById('bat-dot');
         if (d.batPct < 10) { bd.className='dot err'; } else if (d.batPct < 30) { bd.className='dot warn'; } else { bd.className='dot ok'; }
+      }
+      if (d.sdLog !== undefined) {
+        document.getElementById('sd-val').textContent = Math.round(d.sdLog/1024) + ' KB лог / ' + Math.round(d.sdFree/1024) + ' KB своб.';
+        const sd = document.getElementById('sd-dot');
+        sd.className = d.sdFree < 102400 ? 'dot warn' : 'dot ok';
       }
     })
     .catch(() => {});
@@ -480,8 +592,8 @@ static String _buildPage() {
   html.replace("__WKC__",  String(*_wd.wakeupCount));
   html.replace("__CF__",   String(*_wd.calibFactor, 2));
   html.replace("__OFS__",  String(*_wd.offset));
-  { 
-    char _hbuf[12]; 
+  {
+    char _hbuf[12];
 #if defined(ESP32)
     snprintf(_hbuf, sizeof(_hbuf), "%lu", (unsigned long)ESP.getFreeHeap());
 #else
@@ -493,11 +605,25 @@ static String _buildPage() {
   html.replace("__BATV__",  String(*_wd.batVoltage, 2));
   html.replace("__BATP__",  String(*_wd.batPercent));
   html.replace("__BATDOT__", *_wd.batPercent < 10 ? "err" : (*_wd.batPercent < 30 ? "warn" : "ok"));
+  {
+    size_t  sdSz   = log_size();
+    uint32_t sdFr  = log_free_space();
+    html.replace("__SDLOG__",  String(sdSz / 1024));
+    html.replace("__SDFREE__", String(sdFr / 1024));
+    html.replace("__SDDOT__",  sdFr < 102400UL ? "warn" : "ok");
+  }
   html.replace("__DT__",   *_wd.datetime);
   html.replace("__UPT__",  _uptime());
   html.replace("__ALRT__", String(web_get_alert_delta(), 1));
   html.replace("__CWGT__", String(web_get_calib_weight(), 0));
   html.replace("__EMA__",  String(web_get_ema_alpha(), 2));
+  html.replace("__SLPSEC__", String(get_sleep_sec()));
+  html.replace("__BLSEC__",  String(get_lcd_bl_sec()));
+  {
+    char apbuf[24];
+    get_ap_pass(apbuf, sizeof(apbuf));
+    html.replace("__APPASS__", String(apbuf));
+  }
 #if defined(WIFI_MODE_AP)
   html.replace("__NTP_BTN__", "<button class=\"btn btn-blue\" disabled title=\"Недоступно в AP режиме\">🕐 NTP (AP)</button>");
 #else
@@ -517,15 +643,20 @@ static void _sendJson(bool ok, const String &msg) {
 }
 
 // ─── Маршруты ─────────────────────────────────────────────────────────────
+static inline void _activity() {
+  lastActivityTime = millis();
+  if (_wa.onActivity) _wa.onActivity();
+}
+
 static void _handleRoot() {
   if (!_auth()) return;
-  lastActivityTime = millis();
+  _activity();
   _srv.send(200, "text/html; charset=utf-8", _buildPage());
 }
 
 static void _handleData() {
   if (!_auth()) return;
-  lastActivityTime = millis();
+  _activity();
   StaticJsonDocument<384> doc;
   doc["weight"]   = *_wd.weight;
   doc["ref"]      = *_wd.lastSavedWeight;
@@ -542,6 +673,8 @@ static void _handleData() {
   doc["offset"]   = *_wd.offset;
   doc["batV"]     = *_wd.batVoltage;
   doc["batPct"]   = *_wd.batPercent;
+  doc["sdLog"]    = (unsigned long)log_size();
+  doc["sdFree"]   = (unsigned long)log_free_space();
 #if defined(ESP32) || defined(ESP8266)
   doc["heap"]     = ESP.getFreeHeap();
 #else
@@ -553,23 +686,23 @@ static void _handleData() {
 
 static void _handleTare() {
   if (!_auth()) return;
-  lastActivityTime = millis();
+  _activity();
   if (_wa.doTare) { _wa.doTare(); _sendJson(true, "Тарировка выполнена"); }
   else _sendJson(false, "Нет обработчика");
 }
 
 static void _handleSave() {
   if (!_auth()) return;
-  lastActivityTime = millis();
+  _activity();
   if (_wa.doSave) { _wa.doSave(); _sendJson(true, "Эталон сохранён"); }
   else _sendJson(false, "Нет обработчика");
 }
 
 static void _handleSettings() {
   if (!_auth()) return;
-  lastActivityTime = millis();
+  _activity();
   if (_srv.method() != HTTP_POST) { _sendJson(false,"Только POST"); return; }
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<384> doc;
   DeserializationError err = deserializeJson(doc, _srv.arg("plain"));
   if (err) { _sendJson(false,"Ошибка JSON"); return; }
 
@@ -611,6 +744,24 @@ static void _handleSettings() {
   // Сохраняем в EEPROM и обновляем кэш в Memory
   save_web_settings(newAlert, newCalib, newAlpha);
 
+  // Расширенные настройки
+  if (doc.containsKey("sleepSec")) {
+    uint32_t val = doc["sleepSec"].as<uint32_t>();
+    if (val >= 30UL && val <= 86400UL) set_sleep_sec(val);
+    else { _sendJson(false, "sleepSec: 30–86400"); return; }
+  }
+  if (doc.containsKey("lcdBlSec")) {
+    uint16_t val = doc["lcdBlSec"].as<uint16_t>();
+    if (val <= 3600) set_lcd_bl_sec(val);
+    else { _sendJson(false, "lcdBlSec: 0–3600"); return; }
+  }
+  if (doc.containsKey("apPass")) {
+    const char* pass = doc["apPass"].as<const char*>();
+    if (pass && strlen(pass) >= 8 && strlen(pass) <= 23) {
+      set_ap_pass(pass);
+    } else { _sendJson(false, "apPass: 8–23 символа"); return; }
+  }
+
   _sendJson(true, "Сохранено");
 }
 
@@ -625,7 +776,7 @@ static void _handleReboot() {
 // Обработчик NTP синхронизации
 static void _handleNtp() {
   if (!_auth()) return;
-  lastActivityTime = millis();
+  _activity();
   if (_srv.method() != HTTP_POST) { _sendJson(false,"Только POST"); return; }
 
   Serial.println(F("[Web] NTP sync requested..."));
@@ -667,6 +818,13 @@ static void _handleLogClear() {
   _srv.send(200, "application/json", "{\"ok\":true}");
 }
 
+// ─── /api/log/json  GET — лог в JSON ─────────────────────────────────────
+static void _handleLogJson() {
+  if (!_auth()) return;
+  String json = log_to_json(500);
+  _srv.send(200, "application/json", json);
+}
+
 // ─── PUBLIC API ───────────────────────────────────────────────────────────
 void webserver_init(WebData &data, WebActions &actions) {
   _wd = data;
@@ -681,6 +839,7 @@ void webserver_init(WebData &data, WebActions &actions) {
   _srv.on("/api/reboot",     HTTP_POST, _handleReboot);
   _srv.on("/api/log",        HTTP_GET,  _handleLog);
   _srv.on("/api/log/clear",  HTTP_POST, _handleLogClear);
+  _srv.on("/api/log/json",   HTTP_GET,  _handleLogJson);
   _srv.onNotFound(_handleNotFound);
 
   _srv.begin();

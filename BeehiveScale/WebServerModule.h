@@ -28,6 +28,7 @@ struct WebData {
 struct WebActions {
   void (*doTare)();
   void (*doSave)();
+  void (*onActivity)();  // вызывается при любом веб-запросе (для подсветки LCD)
 };
 
 extern unsigned long lastActivityTime;

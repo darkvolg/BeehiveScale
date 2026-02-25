@@ -22,7 +22,10 @@ bool wifi_init() {
   // Режим точки доступа (AP) - подключение напрямую без роутера
   Serial.println(F("[WiFi] Starting AP mode..."));
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, false, AP_MAX_CLIENTS);
+  // Пароль AP: из EEPROM (если установлен через веб) или из хардкода
+  char apPassBuf[24];
+  get_ap_pass(apPassBuf, sizeof(apPassBuf));
+  WiFi.softAP(AP_SSID, apPassBuf, AP_CHANNEL, false, AP_MAX_CLIENTS);
 
   delay(1000);  // Увеличенная задержка для инициализации AP
   
