@@ -9,16 +9,16 @@
 #define LOG_FILE          "/log.csv"
 #define LOG_FILE_OLD      "/log_old.csv"
 
-// Раскомментируйте, если используется SD-карта вместо LittleFS:
-// Требует перепайки: HX711 DT→GPIO16, HX711 SCK→GPIO1, DS18B20→GPIO3, SD CS→GPIO15
-#define USE_SD_CARD
-#define SD_CS_PIN 15
+// SD-карта отключена: SPI MOSI=GPIO13 конфликтует с DS18B20 (TEMP_PIN=13).
+// Раскомментируйте только если DS18B20 перенесён на другой пин.
+// #define USE_SD_CARD
+// #define SD_CS_PIN 15
 
 // ─── API ──────────────────────────────────────────────────────────────────
 bool   log_init();
 // batPct: процент заряда батареи; если < 5 — запись пропускается (защита от разряда)
 void   log_append(const String &datetime, float weight, float tempC,
-                  float humidity, float batV, int batPct = 100);
+                  float humidity, float batV, int batPct);
 void   log_clear();
 size_t log_size();
 bool   log_exists();
@@ -26,5 +26,17 @@ bool   log_exists();
 uint32_t log_free_space();
 // Парсит CSV и возвращает JSON-массив последних maxRows строк
 String   log_to_json(int maxRows = 200);
+// Стримит CSV только за указанную дату (формат: "DD.MM.YYYY") прямо в поток
+// Возвращает кол-во строк; если date пустая — возвращает весь файл
+size_t   log_stream_csv_date(Stream &out, const String &date);
+// Суточная статистика: min/max вес и температура за сегодня
+struct DayStat {
+  float wMin, wMax, tMin, tMax;
+  int   count;
+  bool  valid;
+};
+DayStat  log_day_stat(const String &todayDate);
+// Возвращает true если SD недоступна и используется LittleFS как резервный FS
+bool     log_using_fallback();
 
 #endif

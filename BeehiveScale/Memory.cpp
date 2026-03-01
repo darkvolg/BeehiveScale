@@ -120,7 +120,7 @@ void save_prev_weight(float w) {
 float load_prev_weight(float fallback) {
   float w = 0.0f;
   EEPROM.get(EEPROM_ADDR_PREV_WEIGHT, w);
-  if (isnan(w) || w < 0.0f || w > 500.0f) return fallback;
+  if (isnan(w) || w <= 0.0f || w > 500.0f) return fallback;
   return w;
 }
 
@@ -146,13 +146,9 @@ static bool     _extLoaded   = false;
 
 void ext_settings_init() {
   if (_extLoaded) return;
-  // Проверяем magic3 — хранится в первом байте EEPROM_ADDR_AP_PASS+23
-  // Используем отдельную ячейку для magic3: запишем флаг в конец блока AP пароля
-  // magic3 хранится по адресу EEPROM_ADDR_AP_PASS + 23 (последний байт 24-байтного поля)
-  // Но лучше использовать отдельный байт: addr = EEPROM_ADDR_AP_PASS - 1 = 39... нет, 40-1=39
-  // Используем байт по адресу 63 как magic3
+  // magic3 по адресу 64 (после AP_PASS[24]: 40..63)
   byte magic3 = 0;
-  EEPROM.get(63, magic3);
+  EEPROM.get(EEPROM_ADDR_MAGIC3, magic3);
   if (magic3 != EEPROM_MAGIC3_VALUE) {
     _sleepSec = 900UL;
     _lcdBlSec = 30;
@@ -175,7 +171,7 @@ static void _ext_save() {
   EEPROM.put(EEPROM_ADDR_LCD_BL_SEC, _lcdBlSec);
   EEPROM.put(EEPROM_ADDR_AP_PASS, _apPass);
   byte magic3 = EEPROM_MAGIC3_VALUE;
-  EEPROM.put(63, magic3);
+  EEPROM.put(EEPROM_ADDR_MAGIC3, magic3);
   EEPROM.commit();
 }
 
@@ -201,4 +197,121 @@ void set_ap_pass(const char *pass) {
   strncpy(_apPass, pass, sizeof(_apPass) - 1);
   _apPass[sizeof(_apPass) - 1] = '\0';
   _ext_save();
+}
+
+// ─── Telegram настройки ───────────────────────────────────────────────────
+static char _tgToken[50]  = "";
+static char _tgChatId[16] = "";
+static bool _tgLoaded     = false;
+
+void tg_settings_init() {
+  if (_tgLoaded) return;
+  byte magic = 0;
+  EEPROM.get(EEPROM_ADDR_TG_MAGIC, magic);
+  if (magic != EEPROM_MAGIC_TG_VALUE) {
+    _tgToken[0]  = '\0';
+    _tgChatId[0] = '\0';
+  } else {
+    EEPROM.get(EEPROM_ADDR_TG_TOKEN,  _tgToken);
+    EEPROM.get(EEPROM_ADDR_TG_CHATID, _tgChatId);
+    _tgToken[49]  = '\0';
+    _tgChatId[15] = '\0';
+  }
+  _tgLoaded = true;
+}
+
+void get_tg_token(char *buf, size_t maxLen) {
+  if (!_tgLoaded) tg_settings_init();
+  strncpy(buf, _tgToken, maxLen - 1);
+  buf[maxLen - 1] = '\0';
+}
+
+void set_tg_token(const char *token) {
+  if (!token) return;
+  strncpy(_tgToken, token, sizeof(_tgToken) - 1);
+  _tgToken[sizeof(_tgToken) - 1] = '\0';
+  EEPROM.put(EEPROM_ADDR_TG_TOKEN,  _tgToken);
+  byte magic = EEPROM_MAGIC_TG_VALUE;
+  EEPROM.put(EEPROM_ADDR_TG_MAGIC, magic);
+  EEPROM.commit();
+}
+
+void get_tg_chatid(char *buf, size_t maxLen) {
+  if (!_tgLoaded) tg_settings_init();
+  strncpy(buf, _tgChatId, maxLen - 1);
+  buf[maxLen - 1] = '\0';
+}
+
+void set_tg_chatid(const char *chatid) {
+  if (!chatid) return;
+  strncpy(_tgChatId, chatid, sizeof(_tgChatId) - 1);
+  _tgChatId[sizeof(_tgChatId) - 1] = '\0';
+  EEPROM.put(EEPROM_ADDR_TG_CHATID, _tgChatId);
+  byte magic = EEPROM_MAGIC_TG_VALUE;
+  EEPROM.put(EEPROM_ADDR_TG_MAGIC, magic);
+  EEPROM.commit();
+}
+
+// ─── WiFi режим и STA credentials ─────────────────────────────────────────
+static uint8_t _wifiMode     = 0;           // 0=AP, 1=STA
+static char    _wifiSsid[33] = "";
+static char    _wifiStaPass[33] = "";
+static bool    _wifiCfgLoaded = false;
+
+void wifi_settings_init() {
+  if (_wifiCfgLoaded) return;
+  byte magic = 0;
+  EEPROM.get(EEPROM_ADDR_WIFI_MAGIC, magic);
+  if (magic != EEPROM_MAGIC_WIFI_VALUE) {
+    _wifiMode = 0;
+    _wifiSsid[0] = '\0';
+    _wifiStaPass[0] = '\0';
+  } else {
+    EEPROM.get(EEPROM_ADDR_WIFI_MODE, _wifiMode);
+    EEPROM.get(EEPROM_ADDR_WIFI_SSID, _wifiSsid);
+    EEPROM.get(EEPROM_ADDR_WIFI_PASS, _wifiStaPass);
+    _wifiSsid[32]    = '\0';
+    _wifiStaPass[32] = '\0';
+    if (_wifiMode > 1) _wifiMode = 0;
+  }
+  _wifiCfgLoaded = true;
+}
+
+static void _wifi_save() {
+  byte magic = EEPROM_MAGIC_WIFI_VALUE;
+  EEPROM.put(EEPROM_ADDR_WIFI_MAGIC, magic);
+  EEPROM.put(EEPROM_ADDR_WIFI_MODE,  _wifiMode);
+  EEPROM.put(EEPROM_ADDR_WIFI_SSID,  _wifiSsid);
+  EEPROM.put(EEPROM_ADDR_WIFI_PASS,  _wifiStaPass);
+  EEPROM.commit();
+}
+
+uint8_t get_wifi_mode() { if (!_wifiCfgLoaded) wifi_settings_init(); return _wifiMode; }
+void set_wifi_mode(uint8_t m) {
+  if (m > 1) return;
+  _wifiMode = m; _wifi_save();
+}
+
+void get_wifi_ssid(char *buf, size_t maxLen) {
+  if (!_wifiCfgLoaded) wifi_settings_init();
+  strncpy(buf, _wifiSsid, maxLen - 1);
+  buf[maxLen - 1] = '\0';
+}
+void set_wifi_ssid(const char *ssid) {
+  if (!ssid) return;
+  strncpy(_wifiSsid, ssid, sizeof(_wifiSsid) - 1);
+  _wifiSsid[sizeof(_wifiSsid) - 1] = '\0';
+  _wifi_save();
+}
+
+void get_wifi_sta_pass(char *buf, size_t maxLen) {
+  if (!_wifiCfgLoaded) wifi_settings_init();
+  strncpy(buf, _wifiStaPass, maxLen - 1);
+  buf[maxLen - 1] = '\0';
+}
+void set_wifi_sta_pass(const char *pass) {
+  if (!pass) return;
+  strncpy(_wifiStaPass, pass, sizeof(_wifiStaPass) - 1);
+  _wifiStaPass[sizeof(_wifiStaPass) - 1] = '\0';
+  _wifi_save();
 }

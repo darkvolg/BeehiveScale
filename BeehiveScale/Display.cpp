@@ -1,9 +1,9 @@
 #include "Display.h"
 
 void lcd_init(LiquidCrystal_I2C &lcd) {
-  delay(100);          // дать LCD время на включение до init
+  delay(50);
   lcd.init();
-  delay(50);           // пауза после инициализации
+  delay(10);
   lcd.backlight();
   lcd.clear();
   lcd.noCursor();

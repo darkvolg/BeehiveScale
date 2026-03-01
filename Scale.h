@@ -3,8 +3,8 @@
 
 #include <HX711.h>
 
-#define SENSOR_READY_TIMEOUT_MS 3000
-#define SCALE_READ_SAMPLES 1
+#define SENSOR_READY_TIMEOUT_MS 1500
+#define SCALE_READ_SAMPLES 5
 #define SCALE_CALIB_SAMPLES 20
 
 void scale_init(HX711 &scale, int dtPin, int sckPin);

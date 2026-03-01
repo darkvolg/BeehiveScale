@@ -20,9 +20,20 @@
 #define EEPROM_ADDR_SLEEP_SEC    34   // uint32_t — интервал сна (секунды)
 #define EEPROM_ADDR_LCD_BL_SEC   38   // uint16_t — таймаут подсветки (секунды, 0=всегда вкл)
 #define EEPROM_ADDR_AP_PASS      40   // char[24] — пароль Wi-Fi AP
-#define EEPROM_ADDR_MAGIC3       64   // не используем (нет места), magic проверяется через MAGIC3_VALUE
+#define EEPROM_ADDR_MAGIC3       64   // после AP_PASS[24] (40..63), проверяется через MAGIC3_VALUE
 #define EEPROM_MAGIC3_VALUE      0xA7
-#define EEPROM_SIZE              80   // расширяем до 80 байт
+// Telegram настройки (addr 65-132)
+#define EEPROM_ADDR_TG_MAGIC     65   // 1 байт magic для TG блока
+#define EEPROM_MAGIC_TG_VALUE    0xB1
+#define EEPROM_ADDR_TG_TOKEN     66   // char[50] — Telegram bot token
+#define EEPROM_ADDR_TG_CHATID    116  // char[16] — Telegram chat_id
+// WiFi STA настройки (addr 133-199)
+#define EEPROM_ADDR_WIFI_MAGIC   133  // 1 байт magic
+#define EEPROM_MAGIC_WIFI_VALUE  0xC1
+#define EEPROM_ADDR_WIFI_MODE    134  // 1 байт: 0=AP, 1=STA
+#define EEPROM_ADDR_WIFI_SSID    135  // char[33] — SSID роутера
+#define EEPROM_ADDR_WIFI_PASS    168  // char[33] — Пароль роутера
+#define EEPROM_SIZE              256  // запас для будущих настроек
 
 // Веб-настройки (alertDelta, calibWeight, emaAlpha)
 void  web_settings_init();
@@ -46,6 +57,22 @@ void load_calibration_data(float &factor, long &offset, float &weight);
 void save_calibration(float factor);
 void save_offset(long offset);
 void save_weight(float &lastWeight, float currentWeight);
+
+// Telegram настройки (token, chat_id)
+void tg_settings_init();
+void get_tg_token(char *buf, size_t maxLen);
+void set_tg_token(const char *token);
+void get_tg_chatid(char *buf, size_t maxLen);
+void set_tg_chatid(const char *chatid);
+
+// WiFi режим и STA credentials
+void     wifi_settings_init();
+uint8_t  get_wifi_mode();          // 0=AP, 1=STA
+void     set_wifi_mode(uint8_t m);
+void     get_wifi_ssid(char *buf, size_t maxLen);
+void     set_wifi_ssid(const char *ssid);
+void     get_wifi_sta_pass(char *buf, size_t maxLen);
+void     set_wifi_sta_pass(const char *pass);
 
 // Предыдущий offset (для отмены тары)
 void save_prev_offset(long prevOffset);

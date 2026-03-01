@@ -37,6 +37,7 @@ void sleep_load_persistent(SleepPersistData &data) {
     data.lastTempC = TEMP_ERROR_VALUE;
     data.wakeupCount = 0;
     data.alertSent = false;
+    data.lastAlertWeight = 0.0f;
     Serial.println(F("[Sleep] First boot."));
   }
 }

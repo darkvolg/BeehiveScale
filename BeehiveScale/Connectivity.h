@@ -5,7 +5,7 @@
 
 // ─── Настройки Wi-Fi ──────────────────────────────────────────────────────
 #define WIFI_SSID        "Beeline"
-#define WIFI_PASSWORD    "9044355157"
+#define WIFI_PASSWORD    "YOUR_WIFI_PASSWORD"
 #define WIFI_TIMEOUT_MS  10000UL
 
 // ─── Режим WiFi ───────────────────────────────────────────────────────────
@@ -37,6 +37,17 @@
 #define TS_UPDATE_INTERVAL_MS  60000UL
 
 enum WifiStatus { WIFI_DISCONNECTED, WIFI_CONNECTING, WIFI_CONNECTED };
+
+struct UnsentData {
+  float weight;
+  float temp;
+  float hum;
+  float rtcTemp;
+  char  datetime[20];
+};
+
+void       queue_add(float weight, float temp, float hum, float rtcTemp, const String& dt);
+void       queue_process();
 
 bool       wifi_init();           // Инициализация WiFi (AP или STA режим)
 bool       wifi_connect();        // Подключение к роутеру (STA режим)

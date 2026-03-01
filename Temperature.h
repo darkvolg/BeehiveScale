@@ -21,5 +21,6 @@ struct TempData {
 
 bool     temp_init();
 TempData temp_read();
+bool     temp_available();  // true если датчик найден при init
 
 #endif

@@ -29,11 +29,14 @@ struct WebActions {
   void (*doTare)();
   void (*doSave)();
   void (*onActivity)();  // вызывается при любом веб-запросе (для подсветки LCD)
+  void (*doSetCalibFactor)(float cf);  // установить калибровочный коэффициент
+  void (*doSetCalibOffset)(long offset);  // установить offset
 };
 
 extern unsigned long lastActivityTime;
 
 void webserver_init(WebData &data, WebActions &actions);
 void webserver_handle();
+void webserver_stop();
 
 #endif

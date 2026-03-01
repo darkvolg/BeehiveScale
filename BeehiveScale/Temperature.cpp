@@ -7,25 +7,47 @@
   static DallasTemperature _ds(&_ow);
 #endif
 
+static bool _tempFound = false;
+static bool _firstRead = true;
+
 bool temp_init() {
 #ifdef TEMP_SENSOR_DS18B20
   _ds.begin();
   uint8_t count = _ds.getDeviceCount();
   Serial.print(F("[Temp] DS18B20 sensors found: "));
   Serial.println(count);
-  if (count == 0) return false;
+  if (count == 0) {
+    _tempFound = false;
+    return false;
+  }
   _ds.setResolution(12);
   _ds.setWaitForConversion(false);
   _ds.requestTemperatures();
+  _tempFound = true;
+  _firstRead = true;
   return true;
 #endif
   return false;
+}
+
+bool temp_available() {
+  return _tempFound;
 }
 
 TempData temp_read() {
   TempData td;
 
 #ifdef TEMP_SENSOR_DS18B20
+  if (!_tempFound) return td;
+
+  // Первое чтение после init: конверсия 12-bit ~750ms ещё не готова,
+  // DS18B20 вернёт power-on default 85.0°C — пропускаем
+  if (_firstRead) {
+    _firstRead = false;
+    _ds.requestTemperatures();
+    return td;  // valid=false, пропуск первого чтения
+  }
+
   float t = _ds.getTempCByIndex(0);
   _ds.requestTemperatures();
   if (t == DEVICE_DISCONNECTED_C || t < -55.0f || t > 125.0f) {

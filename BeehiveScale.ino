@@ -1,5 +1,5 @@
 /*
- * BeehiveScale v4.1 - Весы пчеловода (ESP32)
+ * BeehiveScale v4.1 - Весы пчеловода (ESP8266)
  * NTP синхронизация времени через интернет
  */
 
@@ -9,8 +9,12 @@
 #include <EEPROM.h>
 #if defined(ESP8266)
 #include <ESP8266WiFi.h>
+#include <ESP8266mDNS.h>
+#include <ArduinoOTA.h>
 #elif defined(ESP32)
 #include <WiFi.h>
+#include <ESPmDNS.h>
+#include <ArduinoOTA.h>
 #include <esp_task_wdt.h>
 #endif
 
@@ -36,12 +40,12 @@
 #define WEIGHT_SAVE_THR     0.05f
 #define TARE_COUNT             4
 #define TARE_TIMEOUT_MS     3000UL
-#define MENU_SCREENS           7
+#define MENU_SCREENS           8
 #define STABLE_BUF_SIZE        6
 #define STABLE_THR             0.02f
 #define STABLE_SAVE_MIN_MS 600000UL  // 10 мин — минимальный интервал между EEPROM-записями при стабилизации
 #define SPIKE_FILTER_KG      5.0f    // Отбросить показание если скачок > 5 кг
-#define WDT_TIMEOUT_SEC        8
+#define WDT_TIMEOUT_SEC       30
 #define AUTO_SLEEP_MS     180000UL  // 3 минуты бездействия → deep sleep
 
 static inline void app_wdt_init() {
@@ -75,6 +79,10 @@ static inline void app_wdt_reset() {
 LiquidCrystal_I2C lcd(LCD_ADDR, 16, 2);
 HX711             scale;
 
+// Примечание: Serial.end() вызывается перед scale_init() (GPIO1=TX=SCK для HX711).
+// После Serial.end() вызовы Serial.print() безопасны — UART отключен, данные никуда не идут.
+// Но Serial команды (handle_serial_commands) не работают — это штатно при SCK на GPIO1.
+
 struct SystemState {
   float calibrationFactor = 2280.0f;
   long  offset            = 0;
@@ -105,6 +113,8 @@ SleepPersistData persist;
 bool webServerStarted = false;
 String serialBuffer = "";
 unsigned long lastActivityTime = 0;  // Таймер бездействия для auto-sleep
+bool diagRunRequested = false;       // Флаг запуска диагностики
+bool diagDone = false;               // Диагностика завершена (сводка на экране)
 
 void handle_buttons();
 void process_weight();
@@ -118,6 +128,7 @@ void display_screen_datetime();
 void display_screen_battery();
 void display_error();
 void display_screen_calib_menu();
+void display_screen_diag();
 void perform_taring();
 void undo_tare();
 void perform_calibration();
@@ -131,13 +142,16 @@ void setup() {
   Serial.begin(115200);
   Serial.println(F("\n[BeehiveScale] v4.1 boot"));
 
+#if defined(ESP8266)
+  ESP.wdtDisable();  // Отключаем программный WDT на время setup (ESP8266 ~3сек по умолчанию)
+#endif
   app_wdt_init();
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(MENU_BTN_PIN, INPUT_PULLUP);
 
 #if defined(ESP8266)
   Wire.begin(4, 5);
-  Wire.setClockStretchLimit(1500);  // таймаут I2C чтобы не зависал
+  Wire.setClockStretchLimit(2500);  // DS3231 может тянуть до 2ms при конверсии температуры
 #else
   Wire.begin();
 #endif
@@ -153,29 +167,27 @@ void setup() {
   sleep_load_persistent(persist);
 
   lcd_init(lcd);
-  Serial.end();              // Освободить GPIO1 (TX) перед HX711
+
+  Serial.end();              // Освободить GPIO1 (TX) перед HX711 — SCK на GPIO1
   scale_init(scale, DT_PIN, SCK_PIN);
   sys.sensorReady = check_sensor(scale);
 
   bool rtcOk = rtc_init();
-  if (!rtcOk) {
-    Serial.println(F("[RTC] WARNING: no RTC"));
-  }
 
-  temp_init();
+  if (!temp_init()) {
+    Serial.println(F("[Temp] No sensor, readings disabled"));
+  }
 
   load_calibration_data(sys.calibrationFactor, sys.offset, sys.lastSavedWeight);
   sys.prevOffset = load_prev_offset();
   web_settings_init();
   ext_settings_init();
-  // prevWeight: из RTC RAM (deep sleep) или из отдельного EEPROM-слота (холодный старт)
-  // ВАЖНО: используем EEPROM_ADDR_PREV_WEIGHT, а не ADDR_WEIGHT —
-  // авто-фиксация перезаписывает ADDR_WEIGHT, что обнуляло бы дельту при перезагрузке.
-  if (persist.lastWeight != 0.0f) {
-    sys.prevWeight = persist.lastWeight;
-  } else {
-    sys.prevWeight = load_prev_weight(sys.lastSavedWeight);
-  }
+  tg_settings_init();
+  // prevWeight: всегда из отдельного EEPROM-слота (EEPROM_ADDR_PREV_WEIGHT).
+  // persist.lastWeight — это текущий вес на момент выключения, НЕ эталон дельты.
+  // Если использовать persist.lastWeight, то после включения с другим весом
+  // prevWeight = текущий вес → дельта = 0 (именно этот баг и был).
+  sys.prevWeight = load_prev_weight(sys.lastSavedWeight);
 
   bat_init();
 
@@ -184,22 +196,36 @@ void setup() {
     scale.set_offset(sys.offset);
   }
 
-  sys.wifiOk = wifi_init();  // Инициализация WiFi (AP или STA режим) — ДО splash, чтобы AP поднялась пока идёт задержка
+  sys.wifiOk = wifi_init();  // Инициализация WiFi (AP или STA режим)
+
+  // После WiFi восстанавливаем параметры HX711 (на ESP8266 WiFi.mode() может сбросить GPIO)
+  if (sys.sensorReady) {
+    scale.set_scale(sys.calibrationFactor);
+    scale.set_offset(sys.offset);
+  }
+
   show_splash_screen();
   if (sys.wifiOk) {
     Serial.println(F("[WiFi] Connected"));
     Serial.print(F("[WiFi] IP: "));
     Serial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP() : WiFi.softAPIP());
-#if !defined(WIFI_MODE_AP)
-    ntp_sync_time();  // Синхронизация времени (только в STA режиме)
-#endif
+    if (get_wifi_mode() == 1) {
+      ntp_sync_time();  // Синхронизация времени (только в STA режиме)
+    }
     start_webserver();
+    // ArduinoOTA — обновление прошивки по воздуху
+    ArduinoOTA.setHostname("beehivescale");
+    ArduinoOTA.setPassword("ota_beehive");
+    ArduinoOTA.begin();
   } else {
     Serial.println(F("[WiFi] Initialization failed!"));
   }
 
   log_init();
   lastActivityTime = millis();
+#if defined(ESP8266)
+  ESP.wdtEnable(8000);  // Включаем программный WDT обратно: 8 сек
+#endif
   Serial.println(F("[Setup] Done"));
 }
 
@@ -230,6 +256,16 @@ void start_webserver() {
     save_prev_weight(sys.prevWeight);
   };
   wa.onActivity = []() { lcd_backlight_activity(lcd); };
+  wa.doSetCalibFactor = [](float cf) {
+    sys.calibrationFactor = cf;
+    scale.set_scale(cf);
+    save_calibration(cf);
+  };
+  wa.doSetCalibOffset = [](long ofs) {
+    sys.offset = ofs;
+    scale.set_offset(ofs);
+    save_offset(ofs);
+  };
 
   webserver_init(wd, wa);
   webServerStarted = true;
@@ -237,17 +273,29 @@ void start_webserver() {
 
 void loop() {
   app_wdt_reset();
+  if (sys.wifiOk) {
+    ArduinoOTA.handle();
+#if defined(ESP8266)
+    MDNS.update();
+#endif
+  }
   handle_serial_commands();
 
-  static unsigned long lastTempRead = 0;
-  static unsigned long lastTsUpload = 0;
-  static unsigned long lastTgReport = 0;
-  static unsigned long lastBatRead  = 0;
-  static unsigned long lastLogWrite = 0;
+  static unsigned long lastTempRead   = 0;
+  static unsigned long lastTsUpload   = 0;
+  static unsigned long lastTgReport   = 0;
+  static unsigned long lastBatRead    = 0;
+  static unsigned long lastLogWrite   = 0;
+  static unsigned long lastSensorChk  = 0;  // фича 14: watchdog HX711
+  static int           sensorFailCnt  = 0;
   unsigned long now = millis();
 
   if (now - lastTempRead >= TEMP_READ_INTERVAL_MS) {
-    process_temperature();
+    if (temp_available()) {
+      process_temperature();
+    }
+    sys.currentTime = rtc_now();
+    sys.rtcTempC = rtc_temperature();
     lastTempRead = now;
     sys.needsRedraw = true;
   }
@@ -263,6 +311,33 @@ void loop() {
   process_weight();
   update_interface();
 
+  // ── Фича 14: Watchdog HX711 — авто-перезапуск датчика при зависании ──
+  if (now - lastSensorChk >= 5000UL) {
+    lastSensorChk = now;
+    if (!scale.is_ready()) {
+      sensorFailCnt++;
+      if (sensorFailCnt >= 6) {  // 6 × 5с = 30с без ответа → перезапуск
+        Serial.println(F("[HX711] Watchdog: reinit"));
+        scale_init(scale, DT_PIN, SCK_PIN);
+        sys.sensorReady = check_sensor(scale);
+        if (sys.sensorReady) {
+          scale.set_scale(sys.calibrationFactor);
+          scale.set_offset(sys.offset);
+          sys.emaInitialized = false;
+          sys.smoothedWeight = 0.0f;
+          Serial.println(F("[HX711] Recovered"));
+        }
+        sensorFailCnt = 0;
+      }
+    } else {
+      sensorFailCnt = 0;
+      if (!sys.sensorReady) {
+        sys.sensorReady = true;
+        sys.needsRedraw = true;
+      }
+    }
+  }
+
   if (now - lastLogWrite >= LOG_INTERVAL_MS) {
     log_append(sys.datetimeStr, sys.smoothedWeight,
                sys.tempData.temperature, sys.tempData.humidity, sys.batVoltage, sys.batPercent);
@@ -276,12 +351,12 @@ void loop() {
   }
 
   wifi_ensure_connected();
-#if defined(WIFI_MODE_AP)
-  sys.wifiOk = (WiFi.softAPIP() != IPAddress(0,0,0,0));
-#else
-  sys.wifiOk = (WiFi.status() == WL_CONNECTED);
-  ntp_loop();
-#endif
+  if (get_wifi_mode() == 0) {
+    sys.wifiOk = (WiFi.softAPIP() != IPAddress(0,0,0,0));
+  } else {
+    sys.wifiOk = (WiFi.status() == WL_CONNECTED);
+    ntp_loop();
+  }
 
   if (sys.wifiOk && !webServerStarted) {
     start_webserver();
@@ -289,35 +364,48 @@ void loop() {
 
   if (sys.wifiOk && webServerStarted) {
     webserver_handle();
+    static unsigned long lastQueueProc = 0;
+    if (millis() - lastQueueProc >= 60000UL) {
+      queue_process();
+      lastQueueProc = millis();
+    }
   }
 
-#if !defined(WIFI_MODE_AP)
-  if (sys.wifiOk) {
+  if (get_wifi_mode() == 1 && sys.wifiOk) {
     if (now - lastTsUpload >= TS_UPDATE_INTERVAL_MS) {
       float rtcT = rtc_temperature();
-      ts_send(sys.smoothedWeight, sys.tempData.temperature,
-              sys.tempData.humidity, rtcT);
+      if (!ts_send(sys.smoothedWeight, sys.tempData.temperature,
+                   sys.tempData.humidity, rtcT)) {
+        queue_add(sys.smoothedWeight, sys.tempData.temperature, 
+                  sys.tempData.humidity, rtcT, sys.datetimeStr);
+      }
       lastTsUpload = now;
     }
 
     if (now - lastTgReport >= TG_REPORT_INTERVAL) {
       TimeStamp ts = rtc_now();
-      tg_send_report(sys.smoothedWeight, sys.tempData.temperature,
-                     sys.tempData.humidity, rtc_format_datetime(ts));
+      String dt = rtc_format_datetime(ts);
+      if (!tg_send_report(sys.smoothedWeight, sys.tempData.temperature,
+                          sys.tempData.humidity, dt)) {
+        queue_add(sys.smoothedWeight, sys.tempData.temperature, 
+                  sys.tempData.humidity, rtc_temperature(), dt);
+      }
       lastTgReport = now;
     }
   }
-#endif
 
   check_auto_sleep();
 
 #ifdef SLEEP_MODE_DEEP_SLEEP
   log_append(sys.datetimeStr, sys.smoothedWeight,
-             sys.tempData.temperature, sys.tempData.humidity, sys.batVoltage);
+             sys.tempData.temperature, sys.tempData.humidity, sys.batVoltage, sys.batPercent);
   persist.lastWeight = sys.smoothedWeight;
   persist.lastTempC = sys.tempData.temperature;
   persist.wakeupCount++;
   sleep_save_persistent(persist);
+#if defined(ESP32)
+  esp_task_wdt_delete(NULL);
+#endif
   sleep_enter(get_sleep_sec());
 #endif
 }
@@ -339,6 +427,10 @@ void handle_buttons() {
       adjust_calibration();
       pressCount = 0;
       sys.needsRedraw = true;
+    } else if (sys.menuScreen == 7) {
+      diagRunRequested = true;
+      pressCount = 0;
+      sys.needsRedraw = true;
     } else {
       pressCount++;
       lastPressTime = millis();
@@ -349,7 +441,7 @@ void handle_buttons() {
       }
     }
   }
-  if (actMain == LONG_PRESS && sys.menuScreen != 6) {
+  if (actMain == LONG_PRESS && sys.menuScreen != 6 && sys.menuScreen != 7) {
     perform_calibration();
     pressCount = 0;
     sys.needsRedraw = true;
@@ -378,15 +470,17 @@ void handle_buttons() {
 }
 
 void process_weight() {
-  static unsigned long lastSaveTime       = 0;
-  static unsigned long lastStableSaveTime = 0;
-  static unsigned long lastReadTime       = 0;
+  static unsigned long lastSaveTime         = 0;
+  static unsigned long lastStableSaveTime   = 0;
+  static unsigned long lastReadTime         = 0;
+  static unsigned long lastPrevWeightSave   = 0;
+  static float         lastSavedPrevWeight  = NAN;
   static float stableBuf[STABLE_BUF_SIZE];
   static int   stableBufIdx = 0;
   static int   stableBufCnt = 0;
   static bool  stableSaved  = false;
 
-  if (millis() - lastReadTime < 500UL) return;
+  if (millis() - lastReadTime < 800UL) return;
   lastReadTime = millis();
 
   float raw = scale_read_weight(scale, SCALE_READ_SAMPLES);
@@ -399,6 +493,11 @@ void process_weight() {
     return;
   }
 
+  // --- Auto-zero deadband (0.001 kg) ---
+  if (fabsf(raw) < 0.001f) {
+    raw = 0.0f;
+  }
+
   if (!sys.sensorReady) {
     sys.sensorReady = true;
     sys.needsRedraw = true;
@@ -406,11 +505,22 @@ void process_weight() {
   }
 
   // --- Spike-фильтр: отбросить показание если скачок > SPIKE_FILTER_KG ---
+  // После 5 подряд отклонений — сброс EMA (вес мог резко измениться или была помеха)
+  static int spikeRejectCnt = 0;
   if (sys.emaInitialized && fabsf(raw - sys.smoothedWeight) > SPIKE_FILTER_KG) {
+    spikeRejectCnt++;
     Serial.print(F("[Spike] Rejected raw="));
-    Serial.println(raw, 2);
+    Serial.print(raw, 2);
+    Serial.print(F(" cnt="));
+    Serial.println(spikeRejectCnt);
+    if (spikeRejectCnt >= 5) {
+      spikeRejectCnt = 0;
+      sys.emaInitialized = false;
+      Serial.println(F("[Spike] EMA reset after 5 rejections"));
+    }
     return;
   }
+  spikeRejectCnt = 0;
 
   float alpha = web_get_ema_alpha();
   if (!sys.emaInitialized) {
@@ -465,34 +575,51 @@ void process_weight() {
     sys.needsRedraw = true;
   }
 
-#if !defined(WIFI_MODE_AP)
-  float alertDelta = web_get_alert_delta();
-  float absDelta = fabsf(sys.smoothedWeight - sys.prevWeight);
-  if (absDelta >= alertDelta && !persist.alertSent && sys.wifiOk) {
-    TimeStamp ts = rtc_now();
-    tg_send_alert(sys.smoothedWeight, sys.tempData.temperature,
-                  rtc_format_datetime(ts));
-    persist.alertSent = true;
-    // Сбрасываем опорный вес на текущий, чтобы следующая дельта считалась от него
-    sys.prevWeight = sys.smoothedWeight;
-    save_prev_weight(sys.prevWeight);
+  // Периодическая запись prevWeight в EEPROM (раз в 5 мин, только если изменился)
+  if (isnan(lastSavedPrevWeight) || fabsf(lastSavedPrevWeight - sys.prevWeight) > 0.001f) {
+    if (now - lastPrevWeightSave >= 5UL * 60UL * 1000UL) {
+      save_prev_weight(sys.prevWeight);
+      lastSavedPrevWeight = sys.prevWeight;
+      lastPrevWeightSave  = now;
+    }
   }
-  if (absDelta < alertDelta * 0.5f) {
-    persist.alertSent = false;
+
+  if (get_wifi_mode() == 1) {
+    float alertDelta = web_get_alert_delta();
+    // Дельта от эталона — для отображения, не меняется автоматически.
+    // Дельта от последнего алерта — для повторных срабатываний.
+    float deltaFromRef   = fabsf(sys.smoothedWeight - sys.prevWeight);
+    float deltaFromAlert = fabsf(sys.smoothedWeight - persist.lastAlertWeight);
+    // Алерт срабатывает если:
+    //  - первый раз: изменение от эталона >= порога
+    //  - повторно:   изменение от предыдущего алерта >= порога (накопилось ещё)
+    bool firstAlert  = !persist.alertSent && deltaFromRef   >= alertDelta;
+    bool repeatAlert =  persist.alertSent && deltaFromAlert >= alertDelta;
+    if ((firstAlert || repeatAlert) && sys.wifiOk) {
+      TimeStamp ts = rtc_now();
+      tg_send_alert(sys.smoothedWeight, sys.tempData.temperature,
+                    rtc_format_datetime(ts));
+      persist.alertSent    = true;
+      persist.lastAlertWeight = sys.smoothedWeight;  // сдвигаем точку отсчёта повторных алертов
+      // prevWeight НЕ трогаем — дельта на экране/веб остаётся относительно эталона
+    }
+    // Сбрасываем флаг когда вес вернулся близко к эталону
+    if (deltaFromRef < alertDelta * 0.5f) {
+      persist.alertSent    = false;
+      persist.lastAlertWeight = sys.prevWeight;
+    }
   }
-#endif
 }
 
 void process_temperature() {
   sys.tempData = temp_read();
-  sys.rtcTempC = rtc_temperature();
-  sys.currentTime = rtc_now();
 }
 
 void update_interface() {
   if (!sys.needsRedraw) return;
   if (sys.menuScreen != sys.lastMenuScreen) {
     lcd.clear();
+    if (sys.lastMenuScreen == 7) diagDone = false;  // сброс диагностики при уходе
     sys.lastMenuScreen = sys.menuScreen;
   }
   if (sys.sensorReady) {
@@ -504,8 +631,9 @@ void update_interface() {
       case 4: display_screen_datetime();   break;
       case 5: display_screen_status();     break;
       case 6: display_screen_calib_menu(); break;
+      case 7: display_screen_diag();       break;
     }
-    // Номер экрана в правом углу строки 2 (экран 6 — калибровка, там другой формат)
+    // Номер экрана в правом углу строки 2 (экраны 6,7 — особый формат)
     if (sys.menuScreen < 6) {
       show_screen_num(sys.menuScreen);
     }
@@ -517,8 +645,8 @@ void update_interface() {
 
 // Показывает номер экрана "N/7" в позиции 13 строки 1
 void show_screen_num(int n) {
-  char buf[4];
-  snprintf(buf, sizeof(buf), "%d/7", n + 1);
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%d/%d", n + 1, MENU_SCREENS);
   lcd.setCursor(13, 1);
   lcd.print(buf);
 }
@@ -595,7 +723,7 @@ void display_screen_battery() {
   lcd_print_padded(lcd, buf);
   lcd.setCursor(0, 1);
   if (sys.batPercent < 10) {
-    lcd_print_padded(lcd, "!! LOW BATTERY !!");
+    lcd_print_padded(lcd, "!LOW BATTERY!   ");
   } else {
     lcd_print_padded(lcd, "Li-Ion 1S       ");
   }
@@ -608,6 +736,116 @@ void display_screen_calib_menu() {
   lcd_print_padded(lcd, buf);
   lcd.setCursor(0, 1);
   lcd_print_padded(lcd, "MAIN=Vojti      ");
+}
+
+void display_screen_diag() {
+  int diagPass = 0;
+  const int diagTotal = 4;
+
+  // Запуск теста: при входе на экран (diagDone ещё false) или по кнопке
+  if (diagRunRequested || !diagDone) {
+    diagRunRequested = false;
+
+    char buf[17];
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd_print_padded(lcd, "Diagnostika...");
+
+    Serial.println(F("[DIAG] Start"));
+
+    // --- HX711 ---
+    lcd.setCursor(0, 1);
+    bool hx711ok = check_sensor(scale);
+    if (hx711ok) {
+      long raw = scale.read();
+      lcd_print_padded(lcd, "HX711...    OK");
+      Serial.print(F("[DIAG] HX711: OK (raw="));
+      Serial.print(raw);
+      Serial.println(F(")"));
+      diagPass++;
+    } else {
+      lcd_print_padded(lcd, "HX711...  FAIL");
+      Serial.println(F("[DIAG] HX711: FAIL"));
+    }
+    delay(1000);
+    app_wdt_reset();
+
+    // --- DS18B20 ---
+    lcd.setCursor(0, 1);
+    bool ds18ok = temp_available();
+    if (ds18ok) {
+      TempData td = temp_read();
+      lcd_print_padded(lcd, "DS18B20...  OK");
+      Serial.print(F("[DIAG] DS18B20: OK (temp="));
+      Serial.print(td.temperature, 1);
+      Serial.println(F(")"));
+      diagPass++;
+    } else {
+      lcd_print_padded(lcd, "DS18B20... FAIL");
+      Serial.println(F("[DIAG] DS18B20: FAIL"));
+    }
+    delay(1000);
+    app_wdt_reset();
+
+    // --- RTC ---
+    lcd.setCursor(0, 1);
+    TimeStamp ts = rtc_now();
+    bool rtcok = ts.valid;
+    if (rtcok) {
+      lcd_print_padded(lcd, "RTC...      OK");
+      Serial.print(F("[DIAG] RTC: OK ("));
+      snprintf(buf, sizeof(buf), "%02u.%02u.%04u", ts.day, ts.month, ts.year);
+      Serial.print(buf);
+      snprintf(buf, sizeof(buf), " %02u:%02u", ts.hour, ts.minute);
+      Serial.print(buf);
+      Serial.println(F(")"));
+      diagPass++;
+    } else {
+      lcd_print_padded(lcd, "RTC...    FAIL");
+      Serial.println(F("[DIAG] RTC: FAIL"));
+    }
+    delay(1000);
+    app_wdt_reset();
+
+    // --- Battery ---
+    lcd.setCursor(0, 1);
+    float bv = bat_voltage();
+    bool batok = bv > 0.5f;
+    if (batok) {
+      lcd_print_padded(lcd, "Battery...  OK");
+      Serial.print(F("[DIAG] Battery: OK ("));
+      Serial.print(bv, 2);
+      Serial.print(F("V, "));
+      Serial.print(bat_percent());
+      Serial.println(F("%)"));
+      diagPass++;
+    } else {
+      lcd_print_padded(lcd, "Battery.. FAIL");
+      Serial.print(F("[DIAG] Battery: FAIL ("));
+      Serial.print(bv, 2);
+      Serial.println(F("V)"));
+    }
+    delay(1000);
+    app_wdt_reset();
+
+    // --- Сводка ---
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    snprintf(buf, sizeof(buf), "Diag: %d/%d %s", diagPass, diagTotal,
+             diagPass == diagTotal ? " OK" : "FAIL");
+    lcd_print_padded(lcd, buf);
+    lcd.setCursor(0, 1);
+    lcd_print_padded(lcd, "MAIN=povtor");
+
+    Serial.print(F("[DIAG] Result: "));
+    Serial.print(diagPass);
+    Serial.print('/');
+    Serial.print(diagTotal);
+    Serial.println(diagPass == diagTotal ? F(" OK") : F(" FAIL"));
+
+    diagDone = true;
+  }
+  // Если diagDone — сводка уже на экране, ничего не делаем (ждём кнопку)
 }
 
 void adjust_calibration() {
@@ -717,8 +955,21 @@ void perform_taring() {
   lcd.setCursor(0, 0); lcd_print_padded(lcd, " Tarirovka...   ");
   lcd.setCursor(0, 1); lcd_print_padded(lcd, " Podozhdite...  ");
 
+  // Пауза 1.5 сек — дать датчику успокоиться после нажатия кнопки
+  { unsigned long _t=millis(); while(millis()-_t<1500UL){app_wdt_reset();yield();} }
   app_wdt_reset();
-  scale.tare(10);
+
+  // Проверяем готовность датчика перед тарированием
+  if (!scale.wait_ready_timeout(3000)) {
+    lcd.clear();
+    lcd.setCursor(0, 0); lcd_print_padded(lcd, "Tara: OSHIBKA!  ");
+    lcd.setCursor(0, 1); lcd_print_padded(lcd, "HX711 ne otvech.");
+    { unsigned long _t0=millis(); while(millis()-_t0<2000UL){app_wdt_reset();yield();} }
+    sys.needsRedraw = true;
+    return;
+  }
+
+  scale.tare(30);  // 30 сэмплов — стабильный ноль
   sys.offset = scale.get_offset();
   sys.smoothedWeight = 0.0f;
   sys.emaInitialized = false;
@@ -749,6 +1000,7 @@ void undo_tare() {
   scale.set_offset(sys.offset);
   save_offset(sys.offset);
   sys.emaInitialized = false;
+  sys.smoothedWeight = 0.0f;
 
   lcd.clear();
   lcd.setCursor(0, 0); lcd_print_padded(lcd, "Tara: Otmena    ");
@@ -769,8 +1021,11 @@ void perform_calibration() {
       app_wdt_reset(); yield();
       if (millis() - t > timeout_ms) return false;
     }
+    // Ждём отпускание кнопки (с таймаутом от залипания)
+    unsigned long t2 = millis();
     while (digitalRead(pin) == LOW) {
       app_wdt_reset(); yield();
+      if (millis() - t2 > 10000UL) return false;  // 10с таймаут на залипание
     }
     return true;
   };
@@ -785,35 +1040,118 @@ void perform_calibration() {
   }
   if (!wait_press(BUTTON_PIN, 30000)) { sys.needsRedraw = true; return; }
 
-  scale.set_scale();
+  // Проверяем HX711 перед тарированием
+  if (!scale.wait_ready_timeout(3000)) {
+    lcd.clear();
+    lcd.setCursor(0, 0); lcd_print_padded(lcd, "OSHIBKA HX711!  ");
+    lcd.setCursor(0, 1); lcd_print_padded(lcd, "Proverte provod!");
+    { unsigned long _t0=millis(); while(millis()-_t0<2000UL){app_wdt_reset();yield();} }
+    sys.needsRedraw = true;
+    return;
+  }
+
+  // Тарируем с scale=1 чтобы get_units вернул сырые единицы АЦП
+  scale.set_scale(1.0f);
+  // Пауза перед tare — датчик должен успокоиться
+  { unsigned long _t=millis(); while(millis()-_t<500UL){app_wdt_reset();yield();} }
+  // Диагностика: два подряд чтения — должны быть похожи но НЕ одинаковы
+  long dbgA = scale.read();
+  long dbgB = scale.read();
+  Serial.print(F("[Calib] read1=")); Serial.print(dbgA);
+  Serial.print(F(" read2=")); Serial.println(dbgB);
+  if (dbgA == dbgB) {
+    Serial.println(F("[Calib] WARNING: HX711 stuck! Power cycling..."));
+    scale.power_down();
+    delayMicroseconds(100);
+    scale.power_up();
+    delay(400);
+    scale.set_scale(1.0f);
+    if (!scale.wait_ready_timeout(3000)) {
+      lcd.clear();
+      lcd.setCursor(0, 0); lcd_print_padded(lcd, "HX711 zavis!    ");
+      lcd.setCursor(0, 1); lcd_print_padded(lcd, "Proverte provod!");
+      { unsigned long _t0=millis(); while(millis()-_t0<2000UL){app_wdt_reset();yield();} }
+      sys.needsRedraw = true;
+      return;
+    }
+  }
   scale.tare(10);
+  long zeroOffset = scale.get_offset();
+  Serial.print(F("[Calib] zero offset=")); Serial.println(zeroOffset);
 
   lcd.clear();
   lcd.setCursor(0, 0); lcd_print_padded(lcd, "Polozh. 1 kg    ");
   lcd.setCursor(0, 1); lcd_print_padded(lcd, "Zhmi knopku...  ");
   if (!wait_press(BUTTON_PIN, 30000)) { sys.needsRedraw = true; return; }
 
+  // Пауза 1.5 сек — дать грузу стабилизироваться
   lcd.clear();
   lcd.setCursor(0, 0); lcd_print_padded(lcd, "Kalibrovka...   ");
+  { unsigned long _t=millis(); while(millis()-_t<1500UL){app_wdt_reset();yield();} }
 
-  float raw = scale.get_units(SCALE_CALIB_SAMPLES);
-  if (raw == 0.0f || isnan(raw)) {
+  if (!scale.wait_ready_timeout(3000)) {
     lcd.clear();
-    lcd.setCursor(0, 0); lcd_print_padded(lcd, "OSHIBKA raw=0   ");
+    lcd.setCursor(0, 0); lcd_print_padded(lcd, "OSHIBKA HX711!  ");
     lcd.setCursor(0, 1); lcd_print_padded(lcd, "Povtorite       ");
     { unsigned long _t0=millis(); while(millis()-_t0<2000UL){app_wdt_reset();yield();} }
     sys.needsRedraw = true;
     return;
   }
 
+  // Читаем сырое значение (get_value = ADC - offset, scale=1)
+  double rawD = scale.get_value(SCALE_CALIB_SAMPLES);
+  float raw = (float)rawD;
+  Serial.print(F("[Calib] raw ADC units=")); Serial.println(raw, 0);
+
+  if (fabsf(raw) < 1000.0f) {
+    // Первая попытка не удалась — power-cycle и повтор
+    Serial.print(F("[Calib] raw too small=")); Serial.println(raw, 0);
+    Serial.println(F("[Calib] Retrying after power cycle..."));
+    scale.power_down();
+    delayMicroseconds(100);
+    scale.power_up();
+    delay(400);
+    scale.set_scale(1.0f);
+    scale.set_offset(zeroOffset);  // восстанавливаем offset от tare
+    if (scale.wait_ready_timeout(3000)) {
+      rawD = scale.get_value(SCALE_CALIB_SAMPLES);
+      raw = (float)rawD;
+      Serial.print(F("[Calib] Retry raw=")); Serial.println(raw, 0);
+    }
+    if (fabsf(raw) < 1000.0f) {
+      lcd.clear();
+      lcd.setCursor(0, 0); lcd_print_padded(lcd, "OSHIBKA raw=0   ");
+      char dbg[17]; snprintf(dbg, sizeof(dbg), "raw=%.0f", raw);
+      lcd.setCursor(0, 1); lcd_print_padded(lcd, dbg);
+      Serial.print(F("[Calib] ERROR: raw too small=")); Serial.println(raw, 0);
+      { unsigned long _t0=millis(); while(millis()-_t0<3000UL){app_wdt_reset();yield();} }
+      sys.needsRedraw = true;
+      return;
+    }
+  }
+  if (raw < 0.0f) {
+    // Датчик перевёрнут — инвертируем
+    Serial.println(F("[Calib] WARNING: raw<0, inverting"));
+    raw = -raw;
+  }
+
   sys.calibrationFactor = raw / (web_get_calib_weight() / 1000.0f);
   scale.set_scale(sys.calibrationFactor);
   save_calibration(sys.calibrationFactor);
+  // Сохраняем новый offset — scale.tare() внутри калибровки изменил его
+  sys.offset = scale.get_offset();
+  save_offset(sys.offset);
+  // Обновляем prevOffset чтобы "отмена тары" не откатила к до-калибровочному offset
+  sys.prevOffset = sys.offset;
+  sys.hasPrevOffset = false;
+  save_prev_offset(sys.prevOffset);
+  // Сбрасываем EMA и smoothedWeight — иначе spike-фильтр заблокирует новые показания
+  sys.smoothedWeight = 0.0f;
   sys.emaInitialized = false;
 
   lcd.clear();
   lcd.setCursor(0, 0); lcd_print_padded(lcd, "OK! Factor:     ");
-  lcd.setCursor(0, 1); lcd_print_padded(lcd, String(sys.calibrationFactor, 3));
+  { char _cbuf[10]; dtostrf(sys.calibrationFactor, 7, 3, _cbuf); lcd.setCursor(0, 1); lcd_print_padded(lcd, _cbuf); }
   app_wdt_reset();
   { unsigned long _t0=millis(); while(millis()-_t0<2500UL){app_wdt_reset();yield();} }
   sys.needsRedraw = true;
@@ -843,20 +1181,25 @@ void check_auto_sleep() {
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
 #endif
+  if (webServerStarted) webserver_stop();
   webServerStarted = false;
 
   // Записываем лог перед сном
   log_append(sys.datetimeStr, sys.smoothedWeight,
-             sys.tempData.temperature, sys.tempData.humidity, sys.batVoltage);
+             sys.tempData.temperature, sys.tempData.humidity, sys.batVoltage, sys.batPercent);
 
   // Сохраняем данные
   save_weight(sys.lastSavedWeight, sys.smoothedWeight);
+  save_prev_weight(sys.prevWeight);   // сохраняем опорный вес дельты перед сном
   persist.lastWeight = sys.smoothedWeight;
   persist.lastTempC = sys.tempData.temperature;
   persist.wakeupCount++;
   sleep_save_persistent(persist);
 
   // Уходим в deep sleep (пробуждение по кнопке GPIO 0)
+#if defined(ESP32)
+  esp_task_wdt_delete(NULL);
+#endif
   sleep_enter(0);  // 0 = без таймера, только по кнопке
 }
 
@@ -864,7 +1207,20 @@ void show_splash_screen() {
   lcd.clear();
   lcd.setCursor(0, 0); lcd_print_padded(lcd, " Vesy Pchelovod ");
   lcd.setCursor(0, 1); lcd_print_padded(lcd, "   Versiya 4.1  ");
-  { unsigned long _t0=millis(); while(millis()-_t0<1800UL){app_wdt_reset();yield();} }
+  { unsigned long _t0=millis(); while(millis()-_t0<1200UL){app_wdt_reset();yield();} }
+
+  if (sys.sensorReady) {
+    float current = scale_read_weight(scale, 10);
+    if (!isnan(current)) {
+      float diff = current - sys.lastSavedWeight;
+      char buf[17];
+      snprintf(buf, sizeof(buf), "VES: %+6.2f kg", diff);
+      lcd.setCursor(0, 1);
+      lcd_print_padded(lcd, buf);
+      { unsigned long _t0=millis(); while(millis()-_t0<2500UL){app_wdt_reset();yield();} }
+    }
+  }
+
   lcd.clear();
   sys.needsRedraw = true;
 }

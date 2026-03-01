@@ -12,10 +12,19 @@ static float bat_read_raw() {
 void bat_init() {
 #if defined(ESP32)
   analogReadResolution(12);
-  analogSetAttenuation(ADC_11db);
+  #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+    analogSetAttenuation(ADC_ATTEN_DB_11);
+  #else
+    analogSetAttenuation(ADC_11db);
+  #endif
 #endif
-  // Первичное чтение для инициализации EMA
-  _batSmoothed = bat_read_raw();
+  // Усреднение по 10 выборкам при старте для стабильности
+  float sum = 0;
+  for (int i = 0; i < 10; i++) {
+    sum += bat_read_raw();
+    delay(10);
+  }
+  _batSmoothed = sum / 10.0f;
   _batInitialized = true;
 }
 
