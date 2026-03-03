@@ -22,7 +22,22 @@
   static bool _fallback  = false;
 #endif
 
-static const char CSV_HEADER[] = "datetime,weight_kg,temp_c,humidity_pct,bat_v\n";
+// UTF-8 BOM (\xEF\xBB\xBF) + разделитель ";" для корректного открытия в Excel
+// (русская локаль Excel использует ";" как разделитель столбцов)
+static const char CSV_HEADER[] = "datetime;weight_kg;temp_c;humidity_pct;bat_v\n";
+
+// ─── Хелпер: запятая→точка для парсинга CSV с десятичной запятой ─────────
+static float commaToFloat(const String &s) {
+  String tmp = s;
+  tmp.replace(',', '.');
+  return tmp.toFloat();
+}
+// Замена запятой на точку in-place для вставки в JSON
+static String commaToPoint(const String &s) {
+  String tmp = s;
+  tmp.replace(',', '.');
+  return tmp;
+}
 
 // ─── Внутренние хелперы (абстракция над SD / LittleFS) ──────────────────
 
@@ -91,7 +106,11 @@ static File _fs_open_append(const char *path) {
   #if defined(ESP32)
     return SD.open(path, FILE_APPEND);
   #else
-    return SD.open(path, FILE_WRITE);  // ESP8266 SD: FILE_WRITE = append если файл есть
+    // ESP8266 SD: FILE_WRITE создаёт/перезаписывает файл.
+    // Для дозаписи нужно открыть и перемотать в конец (seek).
+    File f = SD.open(path, FILE_WRITE);
+    if (f) f.seek(f.size());
+    return f;
   #endif
   }
   return LittleFS.open(path, "a");
@@ -117,6 +136,11 @@ bool log_init() {
     Serial.println(F("[Log] SD FAILED — trying LittleFS fallback"));
     _fallback = LittleFS.begin();
     if (!_fallback) {
+      Serial.println(F("[Log] LittleFS not formatted, formatting..."));
+      LittleFS.format();
+      _fallback = LittleFS.begin();
+    }
+    if (!_fallback) {
       Serial.println(F("[Log] LittleFS fallback FAILED too"));
       return false;
     }
@@ -139,18 +163,46 @@ bool log_init() {
     File f = _fs_open_write(LOG_FILE);
     if (f) { f.print(CSV_HEADER); f.close(); }
   } else {
-    // Пункт 6: проверяем заголовок — если повреждён, пересоздаём
+    // Проверяем заголовок: должен содержать "datetime" и ";" (новый формат).
+    // Файл с BOM начинается с \xEF\xBB\xBF, поэтому indexOf("datetime") вместо startsWith.
+    // Если заголовок в старом формате (запятые) или повреждён — пересоздаём.
     File f = _fs_open_read(LOG_FILE);
     if (f) {
       String hdr = f.readStringUntil('\n');
       f.close();
       hdr.trim();
-      if (!hdr.startsWith("datetime")) {
-        Serial.println(F("[Log] Header invalid — recreating log"));
+      bool hdrOk = (hdr.indexOf("datetime") >= 0) && (hdr.indexOf(';') >= 0);
+      if (!hdrOk) {
+        Serial.println(F("[Log] Header outdated/invalid — recreating log"));
         File fw = _fs_open_write(LOG_FILE);
         if (fw) { fw.print(CSV_HEADER); fw.close(); }
       }
     }
+  }
+
+  // Проверяем что append реально работает
+  File testF = _fs_open_append(LOG_FILE);
+  if (!testF) {
+    Serial.println(F("[Log] WARNING: append test FAILED!"));
+#ifdef USE_SD_CARD
+    if (!_fallback) {
+      Serial.println(F("[Log] SD append broken — switching to LittleFS"));
+      _sdOk = false;
+      _fallback = LittleFS.begin();
+      if (!_fallback) {
+        LittleFS.format();
+        _fallback = LittleFS.begin();
+      }
+      if (_fallback) {
+        if (!LittleFS.exists(LOG_FILE)) {
+          File fw = LittleFS.open(LOG_FILE, "w");
+          if (fw) { fw.print(CSV_HEADER); fw.close(); }
+        }
+      }
+    }
+#endif
+  } else {
+    testF.close();
   }
 
   Serial.print(F("[Log] Ready"));
@@ -164,13 +216,15 @@ bool log_init() {
 
 static bool _validate_row(const String &datetime, float weight, float tempC,
                            float humidity, float batV) {
-  if (datetime.length() < 5)          return false;  // пустая/слишком короткая дата
+  if (datetime.length() == 0)         return false;  // совсем пустая дата
   if (isnan(weight) || isinf(weight)) return false;
   if (weight < -5.0f || weight > 500.0f) return false;  // физически невозможный вес
-  if (!isnan(tempC) && !isinf(tempC)) {
-    if (tempC < -50.0f || tempC > 100.0f) return false;  // невозможная температура
+  // Значения ≤ -90 — это сентинел ошибки датчика (-99 = TEMP_ERROR_VALUE).
+  // Пропускаем валидацию диапазона для них; реальные физические значения проверяем.
+  if (!isnan(tempC) && !isinf(tempC) && tempC > -90.0f) {
+    if (tempC < -50.0f || tempC > 100.0f) return false;
   }
-  if (!isnan(humidity) && !isinf(humidity)) {
+  if (!isnan(humidity) && !isinf(humidity) && humidity > -90.0f) {
     if (humidity < 0.0f || humidity > 100.0f) return false;
   }
   if (!isnan(batV) && !isinf(batV)) {
@@ -185,8 +239,9 @@ void log_append(const String &datetime, float weight, float tempC,
                 float humidity, float batV, int batPct) {
   if (!_fs_ok()) return;
 
-  // Защита от записи при критически низком заряде батареи
-  if (batPct < 5) {
+  // Защита от записи при критически низком заряде батареи.
+  // batV < 1.0V — батарея не подключена (питание от USB) → не пропускать.
+  if (batPct < 5 && batV > 1.0f) {
     Serial.println(F("[Log] Skip: low battery"));
     return;
   }
@@ -208,7 +263,7 @@ void log_append(const String &datetime, float weight, float tempC,
 
   File f = _fs_open_append(LOG_FILE);
   if (!f) {
-    Serial.println(F("[Log] Open FAILED"));
+    Serial.println(F("[Log] Open FAILED for append"));
 #ifdef USE_SD_CARD
     // Пункт 7: если запись на SD провалилась — переключаемся на LittleFS
     if (!_fallback) {
@@ -223,9 +278,23 @@ void log_append(const String &datetime, float weight, float tempC,
           ff = LittleFS.open(LOG_FILE, "a");
         }
         if (ff) {
-          char buf[64];
-          snprintf(buf, sizeof(buf), "%.2f,%.1f,%.1f,%.2f", weight, tempC, humidity, batV);
-          ff.print(datetime); ff.print(','); ff.print(buf); ff.print('\n');
+          if (isnan(tempC)    || isinf(tempC)    || tempC    <= -90.0f) tempC    = 0.0f;
+          if (isnan(humidity) || isinf(humidity) || humidity <= -90.0f) humidity = 0.0f;
+          if (batV < 0.1f) batV = 0.0f;
+          char wBuf[12], tBuf[12], hBuf[12], bBuf[12];
+          snprintf(wBuf, sizeof(wBuf), "%.2f", weight);
+          snprintf(tBuf, sizeof(tBuf), "%.1f", tempC);
+          snprintf(hBuf, sizeof(hBuf), "%.1f", humidity);
+          snprintf(bBuf, sizeof(bBuf), "%.2f", batV);
+          for (char *p = wBuf; *p; p++) if (*p == '.') *p = ',';
+          for (char *p = tBuf; *p; p++) if (*p == '.') *p = ',';
+          for (char *p = hBuf; *p; p++) if (*p == '.') *p = ',';
+          for (char *p = bBuf; *p; p++) if (*p == '.') *p = ',';
+          ff.print(datetime); ff.print(';');
+          ff.print(wBuf);     ff.print(';');
+          ff.print(tBuf);     ff.print(';');
+          ff.print(hBuf);     ff.print(';');
+          ff.print(bBuf);     ff.print('\n');
           ff.close();
         }
       }
@@ -234,12 +303,28 @@ void log_append(const String &datetime, float weight, float tempC,
     return;
   }
 
-  char buf[64];
-  snprintf(buf, sizeof(buf), "%.2f,%.1f,%.1f,%.2f", weight, tempC, humidity, batV);
-  f.print(datetime);
-  f.print(',');
-  f.print(buf);
-  f.print('\n');
+  // Нормализация: ошибочные значения → 0
+  if (isnan(tempC)    || isinf(tempC)    || tempC    <= -90.0f) tempC    = 0.0f;
+  if (isnan(humidity) || isinf(humidity) || humidity <= -90.0f) humidity = 0.0f;
+  if (batV < 0.1f) batV = 0.0f;
+
+  // Формат с запятой как десятичный разделитель (для русской локали Excel)
+  char wBuf[12], tBuf[12], hBuf[12], bBuf[12];
+  snprintf(wBuf, sizeof(wBuf), "%.2f", weight);
+  snprintf(tBuf, sizeof(tBuf), "%.1f", tempC);
+  snprintf(hBuf, sizeof(hBuf), "%.1f", humidity);
+  snprintf(bBuf, sizeof(bBuf), "%.2f", batV);
+  // Заменяем точку на запятую
+  for (char *p = wBuf; *p; p++) if (*p == '.') *p = ',';
+  for (char *p = tBuf; *p; p++) if (*p == '.') *p = ',';
+  for (char *p = hBuf; *p; p++) if (*p == '.') *p = ',';
+  for (char *p = bBuf; *p; p++) if (*p == '.') *p = ',';
+
+  f.print(datetime); f.print(';');
+  f.print(wBuf);     f.print(';');
+  f.print(tBuf);     f.print(';');
+  f.print(hBuf);     f.print(';');
+  f.print(bBuf);     f.print('\n');
   f.close();
 }
 
@@ -296,6 +381,10 @@ uint32_t log_free_space() {
 // Возвращает true если активен резервный LittleFS (SD недоступна)
 bool log_using_fallback() {
   return _fallback;
+}
+
+bool log_fs_ok() {
+  return _fs_ok();
 }
 
 // ─── Фича 11: стрим CSV за указанную дату ────────────────────────────────
@@ -358,18 +447,21 @@ DayStat log_day_stat(const String &todayDate) {
     String line = f.readStringUntil('\n');
     line.trim();
     if (line.length() == 0) continue;
+    // Пропускаем повторные заголовки
+    if (line.startsWith("datetime") || line.indexOf("weight_kg") >= 0) continue;
     // Фильтр по дате
     if (cmpDate.length() > 0 && !line.startsWith(cmpDate)) continue;
 
-    int c1 = line.indexOf(',');
+    int c1 = line.indexOf(';');
     if (c1 < 0) continue;
-    int c2 = line.indexOf(',', c1+1);
+    int c2 = line.indexOf(';', c1+1);
     if (c2 < 0) continue;
-    int c3 = line.indexOf(',', c2+1);
+    int c3 = line.indexOf(';', c2+1);
     if (c3 < 0) continue;
 
-    float w = line.substring(c1+1, c2).toFloat();
-    float t = line.substring(c2+1, c3).toFloat();
+    float w = commaToFloat(line.substring(c1+1, c2));
+    String tStr = line.substring(c2+1, c3);
+    float t = (tStr.length() == 0) ? -99.0f : commaToFloat(tStr);
 
     if (isnan(w) || w < -5.0f || w > 500.0f) continue;
 
@@ -426,14 +518,17 @@ String log_to_json(int maxRows) {
     if (line.length() == 0) continue;
     if (lineIdx++ < skipLines) continue;
 
-    // Парсим: datetime,weight,temp,hum,batV
-    int c1 = line.indexOf(',');
+    // Пропускаем повторные заголовки (могут появиться после ротации/перезагрузки)
+    if (line.startsWith("datetime") || line.indexOf("weight_kg") >= 0) continue;
+
+    // Парсим: datetime;weight;temp;hum;batV
+    int c1 = line.indexOf(';');
     if (c1 < 0) continue;
-    int c2 = line.indexOf(',', c1+1);
+    int c2 = line.indexOf(';', c1+1);
     if (c2 < 0) continue;
-    int c3 = line.indexOf(',', c2+1);
+    int c3 = line.indexOf(';', c2+1);
     if (c3 < 0) continue;
-    int c4 = line.indexOf(',', c3+1);
+    int c4 = line.indexOf(';', c3+1);
     if (c4 < 0) continue;
 
     String dt  = line.substring(0, c1);
@@ -443,20 +538,20 @@ String log_to_json(int maxRows) {
     String bat = line.substring(c4+1);
 
     // Пункт 6: пропускаем невалидные строки при чтении
-    float w = wgt.toFloat();
+    float w = commaToFloat(wgt);
     if (isnan(w) || isinf(w) || w < -5.0f || w > 500.0f) continue;
 
     if (!first) out += ',';
     out += F("{\"dt\":\"");
     out += dt;
     out += F("\",\"w\":");
-    out += wgt;
+    out += commaToPoint(wgt);
     out += F(",\"t\":");
-    out += tmp;
+    if (tmp.length() == 0) out += F("-99"); else out += commaToPoint(tmp);
     out += F(",\"h\":");
-    out += hum;
+    if (hum.length() == 0) out += F("-99"); else out += commaToPoint(hum);
     out += F(",\"b\":");
-    out += bat;
+    out += commaToPoint(bat);
     out += '}';
     first = false;
   }

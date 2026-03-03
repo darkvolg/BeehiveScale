@@ -15,6 +15,7 @@ using WebServerCompat = WebServer;
 #ifdef USE_SD_CARD
 #include <SPI.h>
 #include <SD.h>
+#include <LittleFS.h>
 #elif defined(ESP8266)
 #include <LittleFS.h>
 #define LOG_FS LittleFS
@@ -41,7 +42,6 @@ static const char PAGE_HTML[] PROGMEM = R"rawhtml(
 <!DOCTYPE html><html lang="ru"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<!-- ИСПРАВЛЕНО: убран meta refresh — данные обновляются через AJAX fetchData() -->
 <title>🐝 BeehiveScale</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -51,61 +51,72 @@ static const char PAGE_HTML[] PROGMEM = R"rawhtml(
   --red:#eb5757;--blue:#56ccf2;--text:#c8d4b8;--text2:#8a9e78;--text3:#506040;
   --mono:'Courier New',monospace;
 }
-body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:14px;min-height:100vh}
+body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:15px;min-height:100vh}
 a{color:var(--amber);text-decoration:none}
 
-/* header */
-.hdr{background:rgba(20,23,16,.97);border-bottom:1px solid var(--border);
-  padding:14px 20px;display:flex;align-items:center;justify-content:space-between;
-  position:sticky;top:0;z-index:99}
-.hdr-logo{font-size:18px;font-weight:700;letter-spacing:3px;color:var(--amber)}
-.hdr-sub{font-size:10px;color:var(--text3);letter-spacing:2px;margin-top:2px}
-.hdr-ip{font-size:11px;color:var(--text3)}
-.live{display:inline-block;width:8px;height:8px;border-radius:50%;
-  background:var(--green);box-shadow:0 0 6px var(--green);
-  animation:pulse 2s infinite;margin-right:6px}
+.refresh-bar{height:2px;background:var(--border);position:fixed;top:0;left:0;right:0;z-index:200}
+.refresh-fill{height:100%;background:var(--amber);transition:width 0.5s linear}
+
+.hdr{background:rgba(20,23,16,.97);border-bottom:1px solid var(--border);padding:8px 24px;position:sticky;top:0;z-index:99;min-height:52px;display:flex;align-items:center;justify-content:center}
+.hdr-inner{display:flex;flex-direction:column;align-items:center;gap:0;position:relative;z-index:1}
+.hdr-logo{font-size:18px;font-weight:700;letter-spacing:3px;color:var(--amber);text-align:center}
+.hdr-sub{font-size:10px;color:var(--text3);letter-spacing:2px}
+.hdr-right{position:absolute;left:62%;top:50%;transform:translateY(-50%);
+  display:flex;align-items:center;gap:14px;font-size:13px;color:var(--text3)}
+.live{display:inline-block;width:7px;height:7px;border-radius:50%;
+  background:var(--green);box-shadow:0 0 5px var(--green);animation:pulse 2s infinite;margin-right:5px}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 
-/* grid */
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:16px;max-width:900px;margin:0 auto}
-@media(max-width:600px){.grid{grid-template-columns:1fr}}
+.tabs{display:flex;border-bottom:1px solid var(--border);
+  background:rgba(20,23,16,.9);position:sticky;top:52px;z-index:98;overflow-x:auto;
+  justify-content:center;padding:0}
+.tab{padding:10px 18px;font-size:13px;letter-spacing:1px;color:var(--text3);
+  border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap;text-transform:uppercase;
+  background:none;border-top:none;border-left:none;border-right:none;font-family:var(--mono)}
+.tab:hover{color:var(--text2)}
+.tab.active{color:var(--amber);border-bottom-color:var(--amber)}
 
-/* card */
-.card{background:var(--panel);border:1px solid var(--border);padding:16px;position:relative;overflow:hidden}
+.section{display:none;padding:20px 24px;max-width:1080px;margin:0 auto;width:100%}
+.section.active{display:block}
+
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.grid-auto{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px}
+@media(max-width:700px){.grid,.grid-3{grid-template-columns:1fr}}
+
+.card{background:var(--panel);border:1px solid var(--border);padding:14px;position:relative;overflow:hidden}
 .card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;
   background:linear-gradient(90deg,var(--amber),transparent)}
-.card-title{font-size:10px;letter-spacing:2px;color:var(--text3);text-transform:uppercase;margin-bottom:10px}
-.card.full{grid-column:1/-1}
+.card.blue::before{background:linear-gradient(90deg,var(--blue),transparent)}
 .card.green::before{background:linear-gradient(90deg,var(--green),transparent)}
 .card.red::before{background:linear-gradient(90deg,var(--red),transparent)}
-.card.blue::before{background:linear-gradient(90deg,var(--blue),transparent)}
+.card.full{grid-column:1/-1}
+.card-title{font-size:12px;letter-spacing:2px;color:var(--text3);text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between}
+.card-title span{cursor:pointer;color:var(--text3);font-size:11px}
+.card-title span:hover{color:var(--amber)}
 
-/* big value */
 .val-big{font-size:42px;font-weight:700;color:var(--amber);line-height:1;letter-spacing:-1px}
-.val-unit{font-size:16px;color:var(--text2);margin-left:4px}
-.val-sub{font-size:11px;color:var(--text3);margin-top:6px}
+.val-unit{font-size:18px;color:var(--text2);margin-left:3px}
+.val-sub{font-size:12px;color:var(--text3);margin-top:6px;line-height:1.7}
 
-/* gauge */
-.gauge-wrap{display:flex;align-items:center;gap:10px;margin-top:8px}
-.gauge{flex:1;height:6px;background:var(--border);position:relative}
+.gauge-wrap{display:flex;align-items:center;gap:8px;margin-top:8px}
+.gauge{flex:1;height:4px;background:var(--border)}
 .gauge-fill{height:100%;background:var(--amber);transition:width .5s}
-.gauge-lbl{font-size:11px;color:var(--text3);width:44px;text-align:right}
+.gauge-lbl{font-size:12px;color:var(--text3);min-width:40px;text-align:right}
 
-/* status row */
-.status-row{display:flex;align-items:center;gap:8px;padding:8px 0;
-  border-bottom:1px solid var(--border);font-size:12px}
+.status-row{display:flex;align-items:center;gap:8px;padding:6px 0;
+  border-bottom:1px solid #1c2018;font-size:13px}
 .status-row:last-child{border:none}
 .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
-.dot.ok{background:var(--green);box-shadow:0 0 5px var(--green)}
-.dot.err{background:var(--red);box-shadow:0 0 5px var(--red)}
-.dot.warn{background:var(--amber);box-shadow:0 0 5px var(--amber)}
+.dot.ok{background:var(--green);box-shadow:0 0 4px var(--green)}
+.dot.err{background:var(--red);box-shadow:0 0 4px var(--red)}
+.dot.warn{background:var(--amber);box-shadow:0 0 4px var(--amber)}
 .status-lbl{flex:1;color:var(--text2)}
-.status-val{color:var(--text);font-size:12px}
+.status-val{color:var(--text);font-size:13px;text-align:right}
 
-/* btn */
-.btn{display:inline-flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:12px;letter-spacing:1px;
-  padding:12px 20px;border:1px solid;cursor:pointer;background:transparent;
-  transition:all .2s;text-transform:uppercase;min-height:44px;gap:8px}
+.btn{display:inline-flex;align-items:center;justify-content:center;font-family:var(--mono);
+  font-size:12px;letter-spacing:1px;padding:9px 16px;border:1px solid;cursor:pointer;
+  background:transparent;transition:all .15s;text-transform:uppercase;gap:6px}
 .btn-amber{border-color:var(--amber);color:var(--amber)}
 .btn-amber:hover{background:var(--amber);color:#000}
 .btn-red{border-color:var(--red);color:var(--red)}
@@ -115,50 +126,100 @@ a{color:var(--amber);text-decoration:none}
 .btn-blue{border-color:var(--blue);color:var(--blue)}
 .btn-blue:hover{background:var(--blue);color:#000}
 .btn:disabled{opacity:.4;cursor:not-allowed}
-.btn:active{transform:scale(0.96);opacity:0.8}
+.btn:active{transform:scale(0.96)}
+.btn-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 
-/* mobile nav */
-.nav-btm{display:none;position:fixed;bottom:0;left:0;right:0;background:rgba(20,23,16,.98);
-  border-top:1px solid var(--border);z-index:1000;justify-content:space-around;padding:8px 0}
-@media(max-width:600px){
-  .nav-btm{display:flex}
-  .grid{padding-bottom:80px}
-  .hdr{padding:10px 15px}
-  .val-big{font-size:36px}
-}
-.nav-item{color:var(--text3);display:flex;flex-direction:column;align-items:center;gap:4px;font-size:9px;text-transform:uppercase;flex:1}
-.nav-item.active{color:var(--amber)}
-.nav-item svg{width:20px;height:20px;fill:currentColor}
-
-/* settings form */
-.form-row{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
-.form-row label{font-size:10px;letter-spacing:1.5px;color:var(--text2);text-transform:uppercase}
-input,select,textarea{
-  background:#1c2018;border:1px solid var(--border);color:var(--text);
-  font-family:var(--mono);font-size:13px;padding:9px 12px;outline:none;width:100%;
-  -webkit-text-fill-color:var(--text)}
-input:-webkit-autofill,input:-webkit-autofill:focus{
-  -webkit-box-shadow:0 0 0 50px #1c2018 inset;
-  -webkit-text-fill-color:var(--text);
-  border:1px solid var(--border);caret-color:var(--text)}
+.form-row{margin-bottom:12px}
+.form-row label{display:block;font-size:11px;letter-spacing:1.5px;color:var(--text3);
+  text-transform:uppercase;margin-bottom:5px}
+input,select{background:#1c2018;border:1px solid var(--border);color:var(--text);
+  font-family:var(--mono);font-size:13px;padding:9px 12px;outline:none;width:100%}
 input:focus,select:focus{border-color:var(--amber)}
-.form-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+input[type=checkbox]{width:auto}
 
-/* toast */
-.toast{position:fixed;bottom:20px;right:20px;z-index:200;
-  font-family:var(--mono);font-size:12px;padding:12px 20px;
-  border:1px solid var(--green);background:rgba(13,15,11,.97);color:var(--green);
-  letter-spacing:1px;transform:translateX(200%);transition:transform .3s}
+/* ── WiFi mode cards ── */
+.wm-opts{display:flex;gap:8px;margin-bottom:12px}
+.wm-opt{flex:1;background:#1c2018;border:1px solid var(--border);padding:14px 10px;cursor:pointer;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:8px;min-height:130px;transition:border-color .15s}
+.wm-opt:hover{border-color:var(--text3)}
+.wm-opt.sel{border-color:var(--amber)}
+.wm-opt input[type=radio]{accent-color:var(--amber)}
+.wm-opt-body{font-size:13px;line-height:1.8;color:var(--text2);text-align:center}
+.wm-opt-body b{color:var(--text);font-size:14px;display:block;margin-bottom:4px}
+.wm-opt-body small{color:var(--text3);font-size:12px}
+
+/* ── Pass change ── */
+.pass-section{border-top:1px solid var(--border);padding-top:12px;margin-top:12px}
+.pass-row{display:flex;gap:8px;align-items:flex-end}
+.pass-row .form-row{flex:1;margin:0}
+.pass-strength{height:3px;background:var(--border);margin-top:4px;transition:all .2s}
+
+/* ── Chart ── */
+.chart-container{position:relative;margin-bottom:10px}
+.chart-svg{width:100%;display:block;overflow:visible}
+.period-tabs{display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap}
+.period-btn{padding:5px 12px;font-size:12px;letter-spacing:1px;border:1px solid var(--border);
+  background:transparent;color:var(--text3);cursor:pointer;font-family:var(--mono);text-transform:uppercase}
+.period-btn.active{border-color:var(--amber);color:var(--amber)}
+.series-btns{display:flex;gap:4px;flex-wrap:wrap}
+.ser-btn{padding:5px 12px;font-size:12px;border:1px solid var(--border);background:transparent;
+  color:var(--text3);cursor:pointer;font-family:var(--mono)}
+.ser-btn.active{background:#1c2018}
+.ser-btn.s-w.active{border-color:var(--amber);color:var(--amber)}
+.ser-btn.s-t.active{border-color:var(--blue);color:var(--blue)}
+.ser-btn.s-b.active{border-color:var(--green);color:var(--green)}
+
+/* ── Tooltip ── */
+.tip{position:absolute;display:none;background:rgba(13,15,11,.95);border:1px solid var(--border);
+  padding:6px 10px;font-size:10px;pointer-events:none;z-index:50;line-height:1.6;min-width:120px}
+
+/* ── Export panel ── */
+.exp-panel{background:#0f1209;border:1px solid var(--border);padding:12px;margin-top:10px;position:relative;z-index:10}
+.exp-panel-title{font-size:12px;letter-spacing:2px;color:var(--text3);text-transform:uppercase;margin-bottom:10px}
+.exp-cols{display:flex;flex-direction:column;gap:4px}
+.exp-col-item{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text2);cursor:pointer}
+.exp-col-item input{width:auto}
+.exp-date-row{display:flex;gap:8px;margin-bottom:10px}
+.exp-date-row .form-row{flex:1;margin:0}
+
+/* ── API ── */
+.api-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px;margin-top:8px}
+.api-item{background:#1c2018;padding:10px 12px;border:1px solid var(--border);font-size:12px}
+.api-method{font-weight:700;margin-bottom:2px}
+.api-desc{color:var(--text3)}
+.get{color:var(--green)}.post{color:var(--amber)}.del{color:var(--red)}
+
+/* ── Info tiles ── */
+.info-tile{background:#1c2018;border:1px solid var(--border);padding:8px 10px}
+.info-tile .lbl{font-size:11px;color:var(--text3);letter-spacing:1px;margin-bottom:4px;text-transform:uppercase}
+.info-tile .val{font-size:17px}
+
+/* ── Calibration wizard ── */
+.wiz-steps{display:flex;gap:0;margin-bottom:12px}
+.wiz-step{flex:1;text-align:center;padding:6px 3px;font-size:11px;letter-spacing:.5px;
+  border-bottom:2px solid var(--border);color:var(--text3);text-transform:uppercase}
+.wiz-step.active{border-color:var(--amber);color:var(--amber)}
+.wiz-step.done{border-color:var(--green);color:var(--green)}
+.wiz-body{background:#1c2018;border:1px solid var(--border);padding:14px;min-height:80px;font-size:13px;line-height:1.8}
+
+/* ── Toast ── */
+.toast{position:fixed;bottom:16px;right:16px;z-index:500;font-family:var(--mono);font-size:11px;
+  padding:10px 16px;border:1px solid var(--green);background:rgba(13,15,11,.97);color:var(--green);
+  letter-spacing:1px;transform:translateX(220%);transition:transform .3s;max-width:280px}
 .toast.show{transform:none}
 .toast.err{border-color:var(--red);color:var(--red)}
 
-/* history chart area */
-.chart-area{margin-top:12px;position:relative;height:80px;overflow:hidden}
-.chart-svg{width:100%;height:100%}
+/* ── Preview table ── */
+.prev-wrap{overflow-x:auto;margin-top:10px}
+.prev-table{width:100%;border-collapse:collapse;font-size:12px}
+.prev-table th{background:#1c2018;color:var(--text3);padding:6px 10px;border:1px solid var(--border);
+  text-align:left;font-weight:normal;letter-spacing:1px;text-transform:uppercase;font-size:11px}
+.prev-table td{padding:5px 10px;border:1px solid var(--border);color:var(--text2)}
+.prev-table tr:hover td{background:#1a1e15}
 
-/* refresh bar */
-.refresh-bar{height:2px;background:var(--border);position:fixed;top:0;left:0;z-index:100}
-.refresh-fill{height:100%;background:var(--amber);transition:width linear}
+/* ── Wiz step bar ── */
+.wiz-actions{display:flex;gap:8px;margin-top:10px;align-items:center}
+.wiz-cur-w{font-size:13px;color:var(--text3);margin-left:auto}
 </style>
 </head>
 <body>
@@ -166,737 +227,1014 @@ input:focus,select:focus{border-color:var(--amber)}
 <div class="refresh-bar"><div class="refresh-fill" id="rbar" style="width:100%"></div></div>
 
 <div class="hdr">
-  <div>
+  <div class="hdr-inner">
     <div class="hdr-logo">🐝 BeehiveScale</div>
-    <div class="hdr-sub">LIVE MONITOR · ESP8266</div>
   </div>
-  <div class="hdr-ip">
-    <span class="live"></span>ONLINE &nbsp;|&nbsp;
+  <div class="hdr-right">
+    <div class="hdr-sub" style="margin-right:16px">LIVE MONITOR · ESP8266</div>
+    <span><span class="live"></span>ONLINE</span>
     <span id="cur-time">--:--:--</span>
   </div>
 </div>
 
-<div class="grid">
+<div class="tabs">
+  <button class="tab active"  onclick="nav('main')">⌂ Главная</button>
+  <button class="tab"         onclick="nav('chart')">📈 График + Экспорт</button>
+  <button class="tab"         onclick="nav('wifi')">📶 Wi-Fi</button>
+  <button class="tab"         onclick="nav('settings')">⚙ Настройки</button>
+  <button class="tab"         onclick="nav('calib')">⚖ Калибровка</button>
+  <button class="tab"         onclick="nav('tg')">✉ Telegram</button>
+  <button class="tab"         onclick="nav('api')">🔌 API</button>
+</div>
 
-  <!-- WEIGHT CARD -->
-  <div class="card" id="weight-card">
-    <div class="card-title">⚖️ Текущий вес</div>
-    <div class="val-big" id="w-val">--<span class="val-unit">кг</span></div>
-    <div class="val-sub">Пред: <b id="w-ref">--</b> кг &nbsp;|&nbsp; Привес: <b id="w-delta" style="color:var(--amber2)">--</b> кг</div>
-    <div class="gauge-wrap">
-      <div class="gauge"><div class="gauge-fill" id="w-gauge" style="width:0%"></div></div>
-      <div class="gauge-lbl" id="w-gpct">0%</div>
+<!-- ═══════════════ MAIN ═══════════════ -->
+<div class="section active" id="sec-main">
+  <div class="grid">
+
+    <div class="card">
+      <div class="card-title">⚖ Текущий вес</div>
+      <div class="val-big" id="w-val">--<span class="val-unit">кг</span></div>
+      <div class="val-sub">Эталон: <b id="w-ref">--</b> кг &nbsp;|&nbsp; Δ: <b id="w-delta" style="color:var(--amber2)">--</b> кг</div>
+      <div class="gauge-wrap">
+        <div class="gauge"><div class="gauge-fill" id="w-gauge" style="width:0%"></div></div>
+        <div class="gauge-lbl" id="w-gpct">0%</div>
+      </div>
     </div>
+
+    <div class="card blue">
+      <div class="card-title">🌡 Температура / Влажность</div>
+      <div class="val-big" id="t-val">--<span class="val-unit">°C</span></div>
+      <div class="val-sub">Влажность: <b id="h-val">--</b>% &nbsp;|&nbsp; RTC: <b id="rtc-val">--</b>°C</div>
+      <div class="gauge-wrap">
+        <div class="gauge"><div class="gauge-fill" id="t-gauge" style="width:0%;background:var(--blue)"></div></div>
+        <div class="gauge-lbl" id="t-gpct">--°C</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🔋 Батарея</div>
+      <div class="val-big" id="bat-v-big">--<span class="val-unit">В</span></div>
+      <div class="val-sub">Заряд: <b id="bat-pct-v">--%</b></div>
+      <div class="gauge-wrap">
+        <div class="gauge"><div class="gauge-fill" id="bat-gauge" style="width:0%;background:var(--green)"></div></div>
+        <div class="gauge-lbl" id="bat-gpct">--%</div>
+      </div>
+      <div class="card-title" style="margin-top:12px;font-size:11px;color:var(--text2)">💾 Лог / Память</div>
+      <div class="val-sub">Занято: <b id="mem-used">--</b> КБ из <b id="mem-total">--</b> КБ</div>
+      <div class="gauge-wrap">
+        <div class="gauge"><div class="gauge-fill" id="mem-gauge" style="width:0%;background:var(--green)"></div></div>
+        <div class="gauge-lbl" id="mem-gpct">--%</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">📡 Статус системы</div>
+      <div class="status-row"><div class="dot warn" id="sr-dot"></div><div class="status-lbl">HX711 датчик</div><div class="status-val" id="sr-val">…</div></div>
+      <div class="status-row"><div class="dot warn" id="wf-dot"></div><div class="status-lbl">Wi-Fi</div><div class="status-val" id="wf-val">…</div></div>
+      <div class="status-row"><div class="dot ok"></div><div class="status-lbl">Веб-сервер</div><div class="status-val">Активен :80</div></div>
+      <div class="status-row"><div class="dot ok" id="sd-dot"></div><div class="status-lbl">Хранилище лог</div><div class="status-val" id="sd-val">--</div></div>
+      <div class="status-row"><div class="dot ok" id="heap-dot"></div><div class="status-lbl">Free Heap</div><div class="status-val" id="heap-val">--</div></div>
+      <div class="status-row"><div class="dot ok"></div><div class="status-lbl">Пробуждений</div><div class="status-val" id="wkc-val">--</div></div>
+      <div class="status-row"><div class="dot ok"></div><div class="status-lbl">Cal. Factor</div><div class="status-val" id="cf-val">--</div></div>
+      <div class="status-row"><div class="dot ok"></div><div class="status-lbl">Offset</div><div class="status-val" id="ofs-val">--</div></div>
+      <div class="status-row"><div class="dot ok"></div><div class="status-lbl">Дата/время</div><div class="status-val" id="dt-val">--</div></div>
+      <div class="status-row"><div class="dot ok"></div><div class="status-lbl">Uptime</div><div class="status-val" id="upt-val">--</div></div>
+    </div>
+
+    <div class="card full">
+      <div class="card-title">🐝 Информация об улье (сегодня)</div>
+      <div class="grid-auto">
+        <div class="info-tile"><div class="lbl">Сезон</div><div class="val" style="color:var(--amber)" id="hi-season">--</div></div>
+        <div class="info-tile"><div class="lbl">Вес мин / макс</div><div class="val" style="color:var(--green);font-size:12px" id="hi-wrange">--/-- кг</div></div>
+        <div class="info-tile"><div class="lbl">Темп мин / макс</div><div class="val" style="color:var(--blue);font-size:12px" id="hi-trange">--/-- °C</div></div>
+        <div class="info-tile"><div class="lbl">Изменение за день</div><div class="val" id="hi-delta">-- кг</div></div>
+        <div class="info-tile"><div class="lbl">Точек сегодня</div><div class="val" style="color:var(--text2)" id="hi-count">--</div></div>
+        <div class="info-tile"><div class="lbl">Дней наблюдений</div><div class="val" style="color:var(--text2)" id="hi-days">--</div></div>
+      </div>
+    </div>
+
+    <div class="card full">
+      <div class="card-title">
+        📈 Мини-график
+        <span onclick="nav('chart')">[открыть полный →]</span>
+      </div>
+      <div class="chart-container" style="height:90px">
+        <svg id="mini-svg" class="chart-svg" viewBox="0 0 600 90" preserveAspectRatio="none">
+          <text x="300" y="50" text-anchor="middle" fill="#506040" font-size="10">Загрузка...</text>
+        </svg>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🔧 Действия</div>
+      <div class="btn-row">
+        <button class="btn btn-amber" onclick="doApi('/api/tare')">⚖ Тарировка</button>
+        <button class="btn btn-green" onclick="doApi('/api/save')">💾 Сохранить эталон</button>
+        <button class="btn btn-blue"  onclick="doApi('/api/ntp')">🕐 NTP Время</button>
+        <button class="btn btn-blue"  onclick="doApi('/api/tg/test')">✉ Тест TG</button>
+        <button class="btn btn-red"   onclick="if(confirm('Очистить лог?'))doApi('/api/log/clear')">🗑 Очистить лог</button>
+        <button class="btn btn-red"   onclick="if(confirm('Перезагрузить ESP?'))doApi('/api/reboot')">↺ Перезагрузить</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">⬇ Быстрый экспорт</div>
+      <div class="val-sub" style="margin-bottom:10px">Лог: <b id="sd-log-size">--</b> &nbsp;|&nbsp; Своб: <b id="sd-free">--</b></div>
+      <div class="form-row">
+        <label>Скачать за дату</label>
+        <input type="date" id="log-date">
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-green" onclick="window.open('/api/log','_blank')">📥 Весь CSV</button>
+        <button class="btn btn-amber" onclick="dlByDate()">📥 За дату</button>
+      </div>
+    </div>
+
   </div>
+</div>
 
-  <!-- TEMPERATURE CARD -->
-  <div class="card blue">
-    <div class="card-title">🌡 Температура</div>
-    <div class="val-big" id="t-val">--<span class="val-unit">°C</span></div>
-    <div class="val-sub">
-      Влажность: <b id="h-val">--</b> % &nbsp;|&nbsp;
-      RTC: <b id="rtc-val">--</b> °C
-    </div>
-    <div class="gauge-wrap">
-      <div class="gauge"><div class="gauge-fill" id="t-gauge" style="width:0%;background:var(--blue)"></div></div>
-      <div class="gauge-lbl" id="t-gpct">--°C</div>
-    </div>
-  </div>
+<!-- ═══════════════ CHART + EXPORT ═══════════════ -->
+<div class="section" id="sec-chart">
 
-  <!-- STATUS CARD -->
-  <div class="card">
-    <div class="card-title">📡 Статус системы</div>
-    <div class="status-row">
-      <div class="dot warn" id="sr-dot"></div>
-      <div class="status-lbl">Датчик HX711</div>
-      <div class="status-val" id="sr-val">...</div>
+  <!-- Верхняя панель управления графиком -->
+  <div class="card" style="margin-bottom:10px">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+      <div class="period-tabs" style="margin:0">
+        <button class="period-btn active" onclick="setPeriod(1,this)">1ч</button>
+        <button class="period-btn" onclick="setPeriod(6,this)">6ч</button>
+        <button class="period-btn" onclick="setPeriod(24,this)">24ч</button>
+        <button class="period-btn" onclick="setPeriod(72,this)">3д</button>
+        <button class="period-btn" onclick="setPeriod(168,this)">7д</button>
+        <button class="period-btn" onclick="setPeriod(0,this)">Всё</button>
+      </div>
+      <div class="series-btns">
+        <button class="ser-btn s-w active" id="sb-w" onclick="toggleSeries('w',this)">⚖ Вес</button>
+        <button class="ser-btn s-t active" id="sb-t" onclick="toggleSeries('t',this)">🌡 Темп</button>
+        <button class="ser-btn s-b active" id="sb-b" onclick="toggleSeries('b',this)">🔋 Батарея</button>
+      </div>
     </div>
-    <div class="status-row">
-      <div class="dot warn" id="wf-dot"></div>
-      <div class="status-lbl">Wi-Fi</div>
-      <div class="status-val" id="wf-val">...</div>
-    </div>
-    <div class="status-row">
-      <div class="dot ok"></div>
-      <div class="status-lbl">Веб-сервер</div>
-      <div class="status-val">Активен :80</div>
-    </div>
-    <div class="status-row">
-      <div class="dot warn"></div>
-      <div class="status-lbl">Пробуждений</div>
-      <div class="status-val" id="wkc-val">--</div>
-    </div>
-    <div class="status-row">
-      <div class="dot ok"></div>
-      <div class="status-lbl">Cal. Factor</div>
-      <div class="status-val" id="cf-val">--</div>
-    </div>
-    <div class="status-row">
-      <div class="dot ok"></div>
-      <div class="status-lbl">Offset</div>
-      <div class="status-val" id="ofs-val">--</div>
-    </div>
-    <div class="status-row">
-      <div class="dot ok" id="heap-dot"></div>
-      <div class="status-lbl">Free Heap</div>
-      <div class="status-val" id="heap-val">-- b</div>
-    </div>
-    <div class="status-row">
-      <div class="dot ok" id="bat-dot"></div>
-      <div class="status-lbl">Батарея</div>
-      <div class="status-val" id="bat-val">--V (--%)</div>
-    </div>
-    <div class="status-row">
-      <div class="dot ok" id="sd-dot"></div>
-      <div class="status-lbl">Хранилище</div>
-      <div class="status-val" id="sd-val">-- KB лог / -- KB своб.</div>
-    </div>
-    <div class="status-row">
-      <div class="dot ok"></div>
-      <div class="status-lbl">Дата и время</div>
-      <div class="status-val" id="dt-val">--</div>
-    </div>
-    <div class="status-row">
-      <div class="dot ok"></div>
-      <div class="status-lbl">Uptime</div>
-      <div class="status-val" id="upt-val">--</div>
-    </div>
-  </div>
 
-  <!-- CHART CARD -->
-  <div class="card full" id="chart-card">
-    <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-      <span>📈 График веса (последние 24 ч)</span>
-      <a href="/chart" style="font-size:11px;color:var(--text3);text-decoration:none" onmouseover="this.style.color='var(--amber)'" onmouseout="this.style.color='var(--text3)'">Открыть полный →</a>
-    </div>
-    <div class="chart-area" style="height:160px" id="chart-wrap">
-      <svg id="chart-svg" class="chart-svg" viewBox="0 0 460 140" preserveAspectRatio="none">
-        <text x="230" y="75" text-anchor="middle" fill="#506040" font-size="10">Загрузка...</text>
+    <!-- График веса -->
+    <div class="chart-container" id="cwrap-w" style="height:280px;margin-bottom:20px">
+      <div class="tip" id="tip-w"></div>
+      <div style="font-size:13px;color:var(--text3);margin-bottom:4px">
+        Мин: <b id="c-wmin" style="color:var(--amber)">--</b> &nbsp;
+        Макс: <b id="c-wmax" style="color:var(--amber)">--</b> &nbsp;
+        Среднее: <b id="c-wavg" style="color:var(--amber)">--</b> кг &nbsp;
+        Точек: <b id="c-pts">0</b>
+      </div>
+      <svg id="chart-w" class="chart-svg" viewBox="0 0 900 260" preserveAspectRatio="xMidYMid meet"
+           onmousemove="onTip(event,'w')" onmouseleave="hideTip('w')">
+        <text x="450" y="120" text-anchor="middle" fill="#506040" font-size="12">Загрузка...</text>
       </svg>
     </div>
-    <div style="font-size:10px;color:var(--text3);margin-top:4px">
-      Мин: <b id="chart-wmin">--</b> кг &nbsp;|&nbsp; Макс: <b id="chart-wmax">--</b> кг &nbsp;|&nbsp; Точек: <b id="chart-pts">0</b>
+
+    <!-- График температуры -->
+    <div class="chart-container" id="cwrap-t" style="height:280px;margin-bottom:20px;border-top:1px solid var(--border);padding-top:14px">
+      <div class="tip" id="tip-t"></div>
+      <div style="font-size:13px;color:var(--text3);margin-bottom:4px">
+        Темп мин: <b id="c-tmin" style="color:var(--blue)">--</b> &nbsp;
+        Макс: <b id="c-tmax" style="color:var(--blue)">--</b> °C
+      </div>
+      <svg id="chart-t" class="chart-svg" viewBox="0 0 900 260" preserveAspectRatio="xMidYMid meet"
+           onmousemove="onTip(event,'t')" onmouseleave="hideTip('t')">
+        <text x="450" y="120" text-anchor="middle" fill="#506040" font-size="12">Загрузка...</text>
+      </svg>
+    </div>
+
+    <!-- График батареи -->
+    <div class="chart-container" id="cwrap-b" style="height:280px;border-top:1px solid var(--border);padding-top:14px">
+      <div class="tip" id="tip-b"></div>
+      <svg id="chart-b" class="chart-svg" viewBox="0 0 900 260" preserveAspectRatio="xMidYMid meet"
+           onmousemove="onTip(event,'b')" onmouseleave="hideTip('b')">
+        <text x="450" y="120" text-anchor="middle" fill="#506040" font-size="12">Загрузка...</text>
+      </svg>
     </div>
   </div>
 
-  <!-- ACTIONS CARD -->
+  <!-- ── Панель экспорта ── -->
+  <div class="exp-panel">
+    <div class="exp-panel-title">⬇ Экспорт данных</div>
+
+    <div class="exp-date-row">
+      <div class="form-row"><label>С даты</label><input type="date" id="exp-from"></div>
+      <div class="form-row"><label>По дату</label><input type="date" id="exp-to"></div>
+    </div>
+
+    <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:12px">
+      <div>
+        <div style="font-size:12px;letter-spacing:1px;color:var(--text3);text-transform:uppercase;margin-bottom:6px">Столбцы</div>
+        <div class="exp-cols">
+          <label class="exp-col-item"><input type="checkbox" id="col-dt" checked> Дата/время</label>
+          <label class="exp-col-item"><input type="checkbox" id="col-w"  checked> Вес (кг)</label>
+          <label class="exp-col-item"><input type="checkbox" id="col-t"  checked> Температура (°C)</label>
+          <label class="exp-col-item"><input type="checkbox" id="col-h"> Влажность (%)</label>
+          <label class="exp-col-item"><input type="checkbox" id="col-bat"> Батарея (В)</label>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:12px;letter-spacing:1px;color:var(--text3);text-transform:uppercase;margin-bottom:6px">Листы Excel</div>
+        <div style="font-size:13px;color:var(--text3);line-height:1.9">
+          ✓ «Данные» — все записи<br>
+          ✓ «Статистика» — мин/макс/среднее<br>
+          ✓ «Дневные итоги» — группировка
+        </div>
+      </div>
+      <div>
+        <div style="font-size:12px;letter-spacing:1px;color:var(--text3);text-transform:uppercase;margin-bottom:6px">Прямое скачивание с SD</div>
+        <div class="btn-row" style="margin:0;flex-direction:column;gap:6px">
+          <button class="btn btn-green" style="width:100%" onclick="window.open('/api/log','_blank')">📥 Весь CSV (SD-карта)</button>
+          <div style="display:flex;gap:6px">
+            <input type="date" id="exp-date-sd" style="flex:1;padding:5px 8px">
+            <button class="btn btn-amber" onclick="dlSdDate()">📥 За дату</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-green" onclick="exportExcel()">📊 Скачать Excel (.xlsx)</button>
+      <button class="btn btn-amber" onclick="exportCsv()">📄 Скачать CSV</button>
+      <button class="btn btn-blue"  onclick="previewExport()">👁 Предпросмотр</button>
+    </div>
+
+    <div id="preview-wrap" style="display:none">
+      <div style="font-size:12px;color:var(--text3);margin-top:10px;letter-spacing:1px;text-transform:uppercase">
+        Предпросмотр (последние 10 строк)
+      </div>
+      <div class="prev-wrap">
+        <table class="prev-table" id="prev-table"></table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ WIFI ═══════════════ -->
+<div class="section" id="sec-wifi">
+  <div class="grid">
+
+    <!-- Режим подключения -->
+    <div class="card">
+      <div class="card-title">📶 Режим подключения</div>
+      <div class="wm-opts">
+        <div class="wm-opt sel" id="wopt-ap" onclick="selWm(0)">
+          <input type="radio" name="wm" checked>
+          <div class="wm-opt-body">
+            <b>📡 Точка доступа (AP)</b>
+            <small>Устройство создаёт свою сеть<br>SSID: BeehiveScale<br>IP: 192.168.4.1</small>
+          </div>
+        </div>
+        <div class="wm-opt" id="wopt-sta" onclick="selWm(1)">
+          <input type="radio" name="wm">
+          <div class="wm-opt-body">
+            <b>🌐 Роутер (STA)</b>
+            <small>Подключение к домашнему Wi-Fi<br>IP: назначает роутер (DHCP)<br>NTP и Telegram доступны</small>
+          </div>
+        </div>
+      </div>
+      <div id="sta-block" style="display:none">
+        <div class="form-row"><label>SSID роутера</label><input type="text" id="wifi-ssid" placeholder="Название вашей Wi-Fi сети" maxlength="32" autocomplete="off"></div>
+        <div class="form-row"><label>Пароль роутера</label><input type="password" id="wifi-pass" placeholder="Пароль (оставьте пустым чтобы не менять)" maxlength="32" autocomplete="new-password"></div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-green" onclick="saveWifi()">💾 Сохранить и перезагрузить</button>
+      </div>
+      <div style="font-size:13px;color:var(--text3);margin-top:10px;line-height:1.7">
+        <b style="color:var(--amber)">AP режим:</b> прямое подключение к устройству → 192.168.4.1<br>
+        <b style="color:var(--amber)">STA режим:</b> устройство в вашей сети → доступен NTP и Telegram
+      </div>
+    </div>
+
+    <!-- Смена паролей -->
+    <div class="card">
+      <div class="card-title">🔒 Пароли и доступ</div>
+
+      <!-- Пароль AP точки доступа -->
+      <div style="margin-bottom:14px">
+        <div style="font-size:13px;color:var(--text2);margin-bottom:8px;font-weight:600">Пароль сети AP (BeehiveScale)</div>
+        <div class="form-row" style="margin-bottom:6px">
+          <label>Новый пароль (8–23 символа)</label>
+          <input type="password" id="ap-pass-new" placeholder="••••••••" maxlength="23" autocomplete="new-password" oninput="checkPassStrength('ap-pass-new','ap-pass-str')">
+          <div class="pass-strength" id="ap-pass-str"></div>
+        </div>
+        <div class="form-row" style="margin-bottom:6px">
+          <label>Повтор пароля</label>
+          <input type="password" id="ap-pass-confirm" placeholder="••••••••" maxlength="23" autocomplete="new-password">
+        </div>
+        <button class="btn btn-amber" onclick="saveApPass()">🔑 Сменить пароль AP</button>
+        <div style="font-size:13px;color:var(--text3);margin-top:6px">
+          Применится после перезагрузки. После смены подключайтесь к AP с новым паролем.
+        </div>
+      </div>
+
+      <!-- Пароль веб-интерфейса -->
+      <div class="pass-section">
+        <div style="font-size:13px;color:var(--text2);margin-bottom:8px;font-weight:600">Веб-авторизация</div>
+        <div style="font-size:13px;color:var(--text3);line-height:1.8">
+          Логин: <b style="color:var(--text)">admin</b><br>
+          Пароль: <b style="color:var(--text)">beehive</b> (по умолчанию)<br>
+          <span style="color:#3d5030">Изменить пароль веб-интерфейса можно только в прошивке:<br>
+          файл <code style="color:var(--amber)">WebServerModule.h</code> → <code style="color:var(--amber)">WEB_ADMIN_PASS</code></span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══════════════ SETTINGS ═══════════════ -->
+<div class="section" id="sec-settings">
+  <div class="grid">
+    <div class="card">
+      <div class="card-title">⚙ Параметры устройства</div>
+      <div class="form-row"><label>Порог тревоги Telegram (кг, 0.1–10)</label><input type="number" id="cfg-alert" step="0.1" min="0.1" max="10" placeholder="0.5"></div>
+      <div class="form-row"><label>Эталонный груз калибровки (г, 100–5000)</label><input type="number" id="cfg-calib" step="100" min="100" max="5000" placeholder="1000"></div>
+      <div class="form-row"><label>EMA сглаживание α (0.05–0.9)</label><input type="number" id="cfg-ema" step="0.05" min="0.05" max="0.9" placeholder="0.1"></div>
+      <div class="form-row"><label>Deep Sleep интервал (сек, 30–86400)</label><input type="number" id="cfg-sleep" step="60" min="30" max="86400" placeholder="180"></div>
+      <div class="form-row"><label>Таймаут подсветки LCD (сек, 0=всегда)</label><input type="number" id="cfg-bl" step="10" min="0" max="3600" placeholder="30"></div>
+      <div class="btn-row">
+        <button class="btn btn-green" onclick="saveSettings()">💾 Сохранить</button>
+        <button class="btn btn-blue"  onclick="loadConfig()">↺ Загрузить</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">ℹ Описание</div>
+      <div style="font-size:13px;color:var(--text3);line-height:2">
+        <b style="color:var(--amber)">Порог тревоги</b> — изменение веса для уведомления в Telegram (роение, кража).<br>
+        <b style="color:var(--amber)">Эталонный груз</b> — масса гири при калибровке HX711.<br>
+        <b style="color:var(--amber)">EMA α</b> — коэффициент фильтра: меньше = плавнее, медленнее реакция.<br>
+        <b style="color:var(--amber)">Deep Sleep</b> — интервал сна ESP. Меньше = чаще замеры, больше потребление.<br>
+        <b style="color:var(--amber)">Подсветка LCD</b> — 0 = всегда включена; иначе — таймаут без нажатий.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ CALIBRATION ═══════════════ -->
+<div class="section" id="sec-calib">
+  <div class="grid">
+    <div class="card">
+      <div class="card-title">🧙 Мастер калибровки</div>
+      <div class="wiz-steps">
+        <div class="wiz-step active" id="ws0">1</div>
+        <div class="wiz-step" id="ws1">2</div>
+        <div class="wiz-step" id="ws2">3</div>
+        <div class="wiz-step" id="ws3">4</div>
+        <div class="wiz-step" id="ws4">✓</div>
+      </div>
+      <div class="wiz-body" id="wiz-body"></div>
+      <div class="wiz-actions">
+        <button class="btn btn-amber" id="wiz-btn" onclick="wizNext()">Далее →</button>
+        <button class="btn btn-red" onclick="wizReset()">↺ Сначала</button>
+        <span class="wiz-cur-w">Текущий вес: <b id="wiz-w" style="color:var(--amber)">--</b> кг</span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">✏ Ручная калибровка</div>
+      <div class="form-row">
+        <label>Cal. Factor (текущий: <b id="cf-live" style="color:var(--amber)">--</b>)</label>
+        <input type="number" id="calib-cf" step="1" min="100" max="100000" placeholder="напр. 2280">
+      </div>
+      <div class="form-row">
+        <label>Offset (текущий: <b id="ofs-live" style="color:var(--amber)">--</b>)</label>
+        <input type="number" id="calib-ofs" step="1" placeholder="обычно не меняется">
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-amber" onclick="applyCalib()">✓ Применить</button>
+        <button class="btn btn-blue"  onclick="doApi('/api/tare')">⊘ Тара</button>
+      </div>
+      <div style="font-size:13px;color:var(--text3);margin-top:10px;line-height:1.7">
+        Подберите Cal.Factor так, чтобы показание<br>совпало с реальной массой эталонного груза.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ TELEGRAM ═══════════════ -->
+<div class="section" id="sec-tg">
+  <div class="grid">
+    <div class="card">
+      <div class="card-title">✉ Telegram Bot</div>
+      <div class="form-row"><label>Bot Token (получить у @BotFather)</label><input type="password" id="tg-token" placeholder="123456789:ABC..." autocomplete="off"></div>
+      <div class="form-row"><label>Chat ID (узнать через @userinfobot)</label><input type="text" id="tg-chatid" placeholder="-100123456789"></div>
+      <div class="btn-row">
+        <button class="btn btn-green" onclick="saveTelegram()">💾 Сохранить</button>
+        <button class="btn btn-blue"  onclick="doApi('/api/tg/test')">✉ Тест</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">🔔 Триггеры уведомлений</div>
+      <div style="font-size:11px;color:var(--text3);line-height:2.1">
+        ✓ Резкое изменение веса (порог: <b id="tg-thresh" style="color:var(--amber)">-- кг</b>)<br>
+        ✓ Роение — быстрая потеря веса<br>
+        ✓ Кража — резкое изменение<br>
+        ✓ Низкий заряд батареи (&lt; 3.5 В)<br>
+        ✓ Восстановление соединения<br>
+        ✓ Тестовое сообщение (кнопка Тест)
+      </div>
+      <div style="font-size:13px;color:var(--text3);margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+        Для работы Telegram нужен режим Wi-Fi <b style="color:var(--amber)">STA</b> (подключение к роутеру)
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ API ═══════════════ -->
+<div class="section" id="sec-api">
+  <div class="card" style="margin-bottom:10px">
+    <div class="card-title">🔌 REST API эндпоинты</div>
+    <div class="api-grid">
+      <div class="api-item"><div class="api-method get">GET /api/data</div><div class="api-desc">Все показания (вес/темп/бат/статус)</div></div>
+      <div class="api-item"><div class="api-method get">GET /api/config</div><div class="api-desc">Конфигурация (alertDelta, ema, sleep…)</div></div>
+      <div class="api-item"><div class="api-method get">GET /api/log</div><div class="api-desc">Скачать лог CSV (опц. ?date=YYYY-MM-DD)</div></div>
+      <div class="api-item"><div class="api-method get">GET /api/log/json</div><div class="api-desc">Лог в JSON (для Grafana/Home Assistant)</div></div>
+      <div class="api-item"><div class="api-method get">GET /api/daystat</div><div class="api-desc">Суточная статистика (опц. ?date=)</div></div>
+      <div class="api-item"><div class="api-method post">POST /api/tare</div><div class="api-desc">Тарировка весов</div></div>
+      <div class="api-item"><div class="api-method post">POST /api/save</div><div class="api-desc">Сохранить текущий вес как эталон</div></div>
+      <div class="api-item"><div class="api-method post">POST /api/settings</div><div class="api-desc">Изменить настройки JSON {alertDelta…}</div></div>
+      <div class="api-item"><div class="api-method post">POST /api/ntp</div><div class="api-desc">Синхронизация времени NTP</div></div>
+      <div class="api-item"><div class="api-method post">POST /api/reboot</div><div class="api-desc">Перезагрузить ESP8266</div></div>
+      <div class="api-item"><div class="api-method del">POST /api/log/clear</div><div class="api-desc">Очистить лог на SD/Flash</div></div>
+      <div class="api-item"><div class="api-method post">POST /api/tg/settings</div><div class="api-desc">Сохранить Telegram token/chatId</div></div>
+      <div class="api-item"><div class="api-method post">POST /api/tg/test</div><div class="api-desc">Тестовое сообщение в Telegram</div></div>
+      <div class="api-item"><div class="api-method post">POST /api/calib/set</div><div class="api-desc">Установить calibFactor / offset</div></div>
+      <div class="api-item"><div class="api-method post">POST /api/wifi/settings</div><div class="api-desc">Режим Wi-Fi + SSID/пароль роутера</div></div>
+    </div>
+  </div>
   <div class="card">
-    <div class="card-title">🔧 Действия</div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px">
-      <button class="btn btn-amber" onclick="doAction('/api/tare')">⚖ Тарировка</button>
-      <button class="btn btn-green" onclick="doAction('/api/save')">💾 Сохранить эталон</button>
-      <button class="btn btn-blue" id="ntp-btn" onclick="doAction('/api/ntp')">🕐 NTP Время</button>
-      <button class="btn btn-blue"  onclick="window.location='/chart'">📈 Графики и лог</button>
-      <button class="btn btn-red"   onclick="if(confirm('Очистить лог SD-карты?'))doAction('/api/log/clear')">🗑 Очистить лог</button>
-      <button class="btn btn-red"   onclick="if(confirm('Перезагрузить ESP32?'))doAction('/api/reboot')">↺ Перезагрузить</button>
-      <button class="btn btn-blue"  onclick="doAction('/api/tg/test')">✉ Тест TG</button>
+    <div class="card-title">👁 Live /api/data
+      <button class="btn btn-blue" style="padding:2px 10px;font-size:12px" onclick="refreshApiView()">↺ Обновить</button>
     </div>
-    <div style="font-size:10px;color:var(--text3);margin-top:12px;line-height:1.7">
-      Тарировка: обнуляет показания (убрать груз перед нажатием)<br>
-      Сохранить эталон: запоминает текущий вес как базовый<br>
-      NTP Время: синхронизация времени через интернет<br>
-      Скачать лог: скачивает CSV файл с SD-карты<br>
-      Очистить лог: удаляет все записи лога
-    </div>
+    <pre id="api-json" style="font-size:13px;color:var(--text2);line-height:1.6;overflow-x:auto;white-space:pre-wrap">Загрузка...</pre>
   </div>
-
-  <!-- SETTINGS CARD -->
-  <div class="card">
-    <div class="card-title">⚙️ Быстрые настройки</div>
-    <div class="form-row">
-      <label>Порог тревоги Telegram (кг)</label>
-      <input type="number" id="cfg-alert" value="" step="0.1" min="0.1" max="10">
-    </div>
-    <div class="form-row">
-      <label>Эталонный груз калибровки (г)</label>
-      <input type="number" id="cfg-calib" value="" step="100" min="100" max="5000">
-    </div>
-    <div class="form-row">
-      <label>EMA сглаживание (0.05 – 0.9)</label>
-      <input type="number" id="cfg-ema" value="" step="0.05" min="0.05" max="0.9">
-    </div>
-    <div class="form-row">
-      <label>Интервал сна deep sleep (сек, 30–86400)</label>
-      <input type="number" id="cfg-sleep" value="" step="60" min="30" max="86400">
-    </div>
-    <div class="form-row">
-      <label>Таймаут подсветки LCD (сек, 0=всегда)</label>
-      <input type="number" id="cfg-bl" value="" step="10" min="0" max="3600">
-    </div>
-    <div class="form-row">
-      <label>Пароль Wi-Fi AP (8–23 символа)</label>
-      <input type="password" id="cfg-appass" value="" minlength="8" maxlength="23" autocomplete="new-password">
-    </div>
-    <div class="form-actions">
-      <button class="btn btn-green" onclick="saveSettings()">💾 Сохранить</button>
-    </div>
-  </div>
-
-  <!-- WIFI LINK -->
-  <div class="card">
-    <div class="card-title">📶 Wi-Fi</div>
-    <div style="font-size:13px;color:var(--text2);margin-bottom:10px">Режим: <b style="color:var(--amber)" id="wifi-mode-lbl">--</b></div>
-    <a href="/wifi" class="btn btn-blue" style="display:inline-block;text-decoration:none">⚙ Настройки Wi-Fi</a>
-  </div>
-
-  <!-- HIVE INFO CARD (фичи 12, 17) -->
-  <div class="card full" id="hive-info-card">
-    <div class="card-title">🐝 Информация об улье</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:6px">
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border)">
-        <div style="font-size:10px;color:var(--text3);letter-spacing:1px;margin-bottom:4px">СЕЗОН</div>
-        <div style="font-size:18px;color:var(--amber)" id="hi-season">--</div>
-      </div>
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border)">
-        <div style="font-size:10px;color:var(--text3);letter-spacing:1px;margin-bottom:4px">ВЕС СЕГОДНЯ МИН/МАКС</div>
-        <div style="font-size:15px;color:var(--green)" id="hi-wrange">-- / -- кг</div>
-      </div>
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border)">
-        <div style="font-size:10px;color:var(--text3);letter-spacing:1px;margin-bottom:4px">ТЕМП СЕГОДНЯ МИН/МАКС</div>
-        <div style="font-size:15px;color:var(--blue)" id="hi-trange">-- / -- °C</div>
-      </div>
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border)">
-        <div style="font-size:10px;color:var(--text3);letter-spacing:1px;margin-bottom:4px">ИЗМЕНЕНИЕ ЗА ДЕНЬ</div>
-        <div style="font-size:15px" id="hi-delta">-- кг</div>
-      </div>
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border)">
-        <div style="font-size:10px;color:var(--text3);letter-spacing:1px;margin-bottom:4px">ТОЧЕК СЕГОДНЯ</div>
-        <div style="font-size:15px;color:var(--text2)" id="hi-count">--</div>
-      </div>
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border)">
-        <div style="font-size:10px;color:var(--text3);letter-spacing:1px;margin-bottom:4px">ДНЕЙ НАБЛЮДЕНИЙ</div>
-        <div style="font-size:15px;color:var(--text2)" id="hi-days">--</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- TELEGRAM CARD -->
-  <div class="card">
-    <div class="card-title">✉ Telegram уведомления</div>
-    <div class="form-row">
-      <label>Bot Token</label>
-      <input type="password" id="tg-token" value="" placeholder="123456789:ABC..." autocomplete="off">
-    </div>
-    <div class="form-row">
-      <label>Chat ID</label>
-      <input type="text" id="tg-chatid" value="" placeholder="-100123456789">
-    </div>
-    <div class="form-actions">
-      <button class="btn btn-green" onclick="saveTelegram()">💾 Сохранить</button>
-      <button class="btn btn-blue"  onclick="doAction('/api/tg/test')">✉ Тест</button>
-    </div>
-    <div style="font-size:10px;color:var(--text3);margin-top:10px;line-height:1.6">
-      Token: получить у @BotFather<br>
-      Chat ID: узнать через @userinfobot
-    </div>
-  </div>
-
-  <!-- CALIBRATION CARD -->
-  <div class="card">
-    <div class="card-title">⚖ Калибровка весов</div>
-    <div class="form-row">
-      <label>Cal. Factor (текущий: <b id="calib-cf-live">--</b>)</label>
-      <input type="number" id="calib-cf" step="1" min="100" max="100000" placeholder="например 2280">
-    </div>
-    <div class="form-row">
-      <label>Offset (текущий: <b id="calib-ofs-live">--</b>)</label>
-      <input type="number" id="calib-ofs" step="1" placeholder="обычно не меняется">
-    </div>
-    <div class="form-actions">
-      <button class="btn btn-amber" onclick="applyCalib()">✓ Применить CF</button>
-      <button class="btn btn-blue"  onclick="doTareAndRefresh()">⊘ Тара + обновить</button>
-    </div>
-    <div style="font-size:10px;color:var(--text3);margin-top:10px;line-height:1.6">
-      Шаг калибровки: поставьте груз → подберите CF так<br>
-      чтобы показание равнялось реальной массе груза.<br>
-      Текущий вес: <b id="calib-wgt-live">--</b> кг
-    </div>
-  </div>
-
-  <!-- API INFO CARD -->
-  <div class="card full">
-    <div class="card-title">🔌 REST API</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-top:8px">
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border);font-size:11px">
-        <div style="color:var(--green)">GET /api/data</div>
-        <div style="color:var(--text3);margin-top:3px">Все показания в JSON</div>
-      </div>
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border);font-size:11px">
-        <div style="color:var(--amber)">POST /api/tare</div>
-        <div style="color:var(--text3);margin-top:3px">Тарировка весов</div>
-      </div>
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border);font-size:11px">
-        <div style="color:var(--amber)">POST /api/save</div>
-        <div style="color:var(--text3);margin-top:3px">Сохранить текущий как эталон</div>
-      </div>
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border);font-size:11px">
-        <div style="color:var(--blue)">POST /api/ntp</div>
-        <div style="color:var(--text3);margin-top:3px">Синхронизация времени NTP</div>
-      </div>
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border);font-size:11px">
-        <div style="color:var(--amber)">POST /api/settings</div>
-        <div style="color:var(--text3);margin-top:3px">Изменить настройки (JSON)</div>
-      </div>
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border);font-size:11px">
-        <div style="color:var(--green)">GET /api/log</div>
-        <div style="color:var(--text3);margin-top:3px">Скачать лог CSV</div>
-      </div>
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border);font-size:11px">
-        <div style="color:var(--red)">POST /api/log/clear</div>
-        <div style="color:var(--text3);margin-top:3px">Очистить лог</div>
-      </div>
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border);font-size:11px">
-        <div style="color:var(--red)">POST /api/reboot</div>
-        <div style="color:var(--text3);margin-top:3px">Перезагрузить ESP32</div>
-      </div>
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border);font-size:11px">
-        <div style="color:var(--green)">GET /api/log/json</div>
-        <div style="color:var(--text3);margin-top:3px">Лог в JSON (для HA/Grafana)</div>
-      </div>
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border);font-size:11px">
-        <div style="color:var(--amber)">POST /api/tg/settings</div>
-        <div style="color:var(--text3);margin-top:3px">Сохранить Telegram token/chatId</div>
-      </div>
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border);font-size:11px">
-        <div style="color:var(--blue)">POST /api/tg/test</div>
-        <div style="color:var(--text3);margin-top:3px">Тестовое Telegram сообщение</div>
-      </div>
-      <div style="background:#1c2018;padding:10px 12px;border:1px solid var(--border);font-size:11px">
-        <div style="color:var(--amber)">POST /api/calib/set</div>
-        <div style="color:var(--text3);margin-top:3px">Установить calibFactor / offset</div>
-      </div>
-    </div>
-  </div>
-
-</div><!-- /grid -->
+</div>
 
 <div class="toast" id="toast"></div>
 
 <script>
-// ── Auto-refresh bar ──────────────────────────────────────────────────
+// ── Globals ─────────────────────────────────────────────────────────
 const REFRESH = 5000;
-let   _start  = Date.now();
-const bar     = document.getElementById('rbar');
+let _start = Date.now();
+let _all = [];           // весь лог
+let _curWeight = 0;      // текущий вес для мини-графика
+let _periodH = 1;
+let _serVisible = {w:true, t:true, b:true};
+let _wizStep = 0;
+let _wifiMode = 0;
+// Данные для тултипов (по серии)
+let _tipPts = {};
 
+// ── Nav ──────────────────────────────────────────────────────────────
+function nav(id) {
+  document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('sec-'+id).classList.add('active');
+  const idx = {main:0,chart:1,wifi:2,settings:3,calib:4,tg:5,api:6};
+  document.querySelectorAll('.tab')[idx[id]].classList.add('active');
+  if (id==='chart') renderCharts();
+  if (id==='api')   refreshApiView();
+  if (id==='settings'||id==='tg') loadConfig();
+  if (id==='wifi') loadConfig();
+  if (id==='calib') { fetchData(); }   // немедленно обновить cf-live, ofs-live, wiz-w
+}
+
+// ── Refresh bar ───────────────────────────────────────────────────────
+const bar = document.getElementById('rbar');
 function tickBar() {
-  const elapsed = Date.now() - _start;
-  const pct     = Math.max(0, 100 - (elapsed / REFRESH * 100));
-  bar.style.width = pct + '%';
-  bar.style.transitionDuration = '0.5s';
-  if (elapsed < REFRESH) requestAnimationFrame(tickBar);
+  const pct = Math.max(0, 100-(Date.now()-_start)/REFRESH*100);
+  bar.style.width = pct+'%';
+  if (Date.now()-_start < REFRESH) requestAnimationFrame(tickBar);
 }
 tickBar();
 
-// ── Live clock ────────────────────────────────────────────────────────
-function tickClock() {
-  const t = new Date();
-  const p = n => String(n).padStart(2,'0');
-  document.getElementById('cur-time').textContent =
-    p(t.getHours())+':'+p(t.getMinutes())+':'+p(t.getSeconds());
-  setTimeout(tickClock, 1000);
-}
-tickClock();
+// ── Clock ─────────────────────────────────────────────────────────────
+(function tick() {
+  const t=new Date(), p=n=>String(n).padStart(2,'0');
+  document.getElementById('cur-time').textContent = p(t.getHours())+':'+p(t.getMinutes())+':'+p(t.getSeconds());
+  setTimeout(tick, 1000);
+})();
 
 // ── Toast ─────────────────────────────────────────────────────────────
-function showToast(msg, isErr, ms) {
+function toast(msg, err) {
   const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.className   = 'toast' + (isErr ? ' err' : '') + ' show';
-  setTimeout(() => el.classList.remove('show'), ms || 3000);
+  el.textContent=msg; el.className='toast'+(err?' err':'')+' show';
+  setTimeout(()=>el.classList.remove('show'), 3500);
 }
 
-// ── API actions ───────────────────────────────────────────────────────
-function doAction(url) {
-  console.log('[JS] Requesting:', url);
-  fetch(url, { method:'POST' })
-    .then(r => {
-      console.log('[JS] Response status:', r.status);
-      return r.json();
-    })
-    .then(d => {
-      console.log('[JS] Response data:', d);
-      showToast(d.ok ? '✓ ' + d.msg : '✗ ' + d.msg, !d.ok);
-    })
-    .catch(e => {
-      console.error('[JS] Error:', e);
-      showToast('✗ Ошибка связи', true);
-    });
+// ── API ───────────────────────────────────────────────────────────────
+function doApi(url) {
+  const method = (url.includes('/data')||url.includes('/log')||url.includes('/config')||url.includes('/daystat')) ? 'GET' : 'POST';
+  return fetch(url,{method}).then(r=>r.json()).then(d=>{
+    toast(d.msg||(d.ok?'OK':'Ошибка'), !d.ok); return d;
+  }).catch(()=>toast('Нет связи',true));
 }
 
-function doDownload(url) {
-  window.open(url, '_blank');
+// ── Fetch /api/data ───────────────────────────────────────────────────
+function fetchData() {
+  fetch('/api/data').then(r=>r.json()).then(updDash).catch(()=>{});
+  fetch('/api/daystat').then(r=>r.json()).then(updHive).catch(()=>{});
+  loadLog();
 }
 
-// ── SVG Chart ─────────────────────────────────────────────────────────
-function renderChart(data) {
-  const svg = document.getElementById('chart-svg');
-  if (!data || data.length === 0) {
-    svg.innerHTML = '<text x="230" y="75" text-anchor="middle" fill="#506040" font-size="10">Нет данных</text>';
+function updDash(d) {
+  const w = parseFloat(d.weight)||0;
+  _curWeight = w;
+  setText('w-val', w.toFixed(3)+'<span class="val-unit">кг</span>', true);
+  setText('w-ref', parseFloat(d.ref||0).toFixed(3));
+  const dw = w-parseFloat(d.ref||0);
+  const dwEl=document.getElementById('w-delta');
+  dwEl.textContent=(dw>=0?'+':'')+dw.toFixed(3);
+  dwEl.style.color=dw>0?'var(--green)':dw<0?'var(--red)':'var(--amber2)';
+  setGauge('w-gauge','w-gpct', Math.min(100,w/80*100), '', '%');
+
+  const t=parseFloat(d.temp), rtcT=parseFloat(d.rtcT||0);
+  if (!isNaN(t)&&t>-90) {
+    setText('t-val',t.toFixed(1)+'<span class="val-unit">°C</span>',true);
+    setGauge('t-gauge','t-gpct', Math.min(100,Math.max(0,(t+20)/70*100)), t.toFixed(1), '°C');
+  } else {
+    setText('t-val','---<span class="val-unit">°C</span>',true);
+    setGauge('t-gauge','t-gpct', 0, '---', '°C');
+  }
+  setText('h-val', parseFloat(d.hum||0).toFixed(0));
+  setText('rtc-val', rtcT.toFixed(1));
+
+  const bv=parseFloat(d.batV||0), bp=parseFloat(d.batPct||0);
+  setText('bat-v-big',bv.toFixed(2)+'<span class="val-unit">В</span>',true);
+  setText('bat-pct-v',bp.toFixed(0)+'%');
+  const bColor=bp<20?'var(--red)':bp<40?'var(--amber)':'var(--green)';
+  document.getElementById('bat-gauge').style.background=bColor;
+  setGauge('bat-gauge','bat-gpct',bp,'','%');
+
+  // Status
+  setDot('sr-dot',d.sensor,'ok','err'); setText('sr-val',d.sensor?'OK':'Ошибка');
+  setDot('wf-dot',d.wifi,'ok','warn'); setText('wf-val',d.wifi?'Подключён':'AP режим');
+  setText('wkc-val',d.wakeups||0);
+  setText('cf-val',parseFloat(d.cf||0).toFixed(0));
+  setText('ofs-val',d.offset||0);
+  setText('dt-val',d.datetime||'--');
+  setText('upt-val',d.uptime||'--');
+  const heap=parseInt(d.heap||0);
+  setText('heap-val',(heap/1024).toFixed(1)+' KB');
+  setDot('heap-dot',heap>5000,'ok','warn');
+  const sdKb=Math.round(parseInt(d.sdLog||0)/1024);
+  const freeKb=Math.round(parseInt(d.sdFree||0)/1024);
+  // Свободное место известно только при LittleFS (fallback); SD-библиотека его не отдаёт
+  const freeKnown=!!d.sdFallback;
+  const totalKb=freeKnown?sdKb+freeKb:0;
+  const memPct=totalKb>0?Math.min(100,sdKb/totalKb*100):0;
+  setText('sd-log-size',sdKb+' KB');
+  setText('sd-free',freeKnown?freeKb+' KB':'н/д');
+  // Gauge памяти/лога
+  const mColor=memPct>90?'var(--red)':memPct>70?'var(--amber)':'var(--green)';
+  const memGauge=document.getElementById('mem-gauge');
+  if(memGauge){memGauge.style.background=mColor;setGauge('mem-gauge','mem-gpct',memPct,memPct.toFixed(0),'%');}
+  setText('mem-used',sdKb);setText('mem-total',freeKnown?totalKb:'?');
+  // Предупреждение: ФС не смонтирована
+  const fsOk=!!d.sdOk;
+  const sdDot=document.getElementById('sd-dot');
+  if(sdDot) sdDot.className='dot '+(fsOk?'ok':'err');
+  if(fsOk) setText('sd-val',sdKb+' KB / своб. '+(freeKnown?freeKb+' KB':'н/д'));
+  else setText('sd-val','⚠ ФС не доступна');
+
+  // Calib live
+  if (document.getElementById('cf-live')) setText('cf-live',parseFloat(d.cf||0).toFixed(0));
+  if (document.getElementById('ofs-live')) setText('ofs-live',d.offset||0);
+  if (document.getElementById('wiz-w')) setText('wiz-w',parseFloat(d.weight||0).toFixed(3));
+  // Автозаполнение поля CF текущим значением, если пользователь ещё не вводил своё
+  var cfInput=document.getElementById('calib-cf');
+  if(cfInput&&cfInput.value===''&&d.cf) cfInput.value=Math.round(parseFloat(d.cf||0));
+}
+
+function updHive(d) {
+  if (!d) return;
+  const s={Vesna:'🌸 Весна',Leto:'☀ Лето',Osen:'🍂 Осень',Zima:'❄ Зима'};
+  setText('hi-season',s[d.season]||d.season||'--');
+  if (d.valid) {
+    setText('hi-wrange',d.wMin.toFixed(2)+' / '+d.wMax.toFixed(2)+' кг');
+    if (!isNaN(d.tMin)) setText('hi-trange',d.tMin.toFixed(1)+' / '+d.tMax.toFixed(1)+' °C');
+    const dk=parseFloat(d.deltaKg||0);
+    const de=document.getElementById('hi-delta');
+    de.textContent=(dk>=0?'+':'')+dk.toFixed(3)+' кг';
+    de.style.color=dk>0?'var(--green)':dk<0?'var(--red)':'var(--text2)';
+    setText('hi-count',d.count||0);
+    setText('hi-days',d.daysSinceStart||0);
+  }
+}
+
+function setText(id,v,html) {
+  const el=document.getElementById(id);
+  if(!el)return;
+  if(html) el.innerHTML=v; else el.textContent=v;
+}
+function setGauge(gid,lid,pct,val,unit) {
+  const g=document.getElementById(gid),l=document.getElementById(lid);
+  if(g) g.style.width=pct.toFixed(0)+'%';
+  if(l) l.textContent=val+unit;
+}
+function setDot(id,ok,cOk,cBad) {
+  const el=document.getElementById(id);
+  if(el) el.className='dot '+(ok?cOk:cBad);
+}
+
+// ── Load log ──────────────────────────────────────────────────────────
+function loadLog() {
+  fetch('/api/log/json').then(r=>r.json()).then(data=>{
+    _all = data;
+    drawMini();
+    if (document.getElementById('sec-chart').classList.contains('active')) renderCharts();
+  }).catch(()=>{
+    drawMini();
+    if(document.getElementById('sec-chart').classList.contains('active')) renderCharts();
+  });
+}
+
+// ── Mini chart ────────────────────────────────────────────────────────
+function drawMini() {
+  const svg=document.getElementById('mini-svg');
+  if (!_all||_all.length<2) {
+    const wt=_curWeight>0?_curWeight.toFixed(3)+' кг':'--';
+    svg.innerHTML='<text x="300" y="36" text-anchor="middle" fill="#f5a623" font-size="28" font-weight="bold">'+wt+'</text>'+
+      '<text x="300" y="68" text-anchor="middle" fill="#506040" font-size="13">Лог пуст — нет данных для графика</text>';
     return;
   }
-  const pts = data.filter(() => true);
-  if (pts.length === 0) return;
+  const pts=_all.slice(-120);
+  drawLineSvg(svg,pts,'w','#f5a623',600,90,36,6,6,18,false);
+}
 
-  const weights = pts.map(d => parseFloat(d.w));
-  let wMin = Math.min(...weights);
-  let wMax = Math.max(...weights);
-  if (wMax === wMin) { wMin -= 0.5; wMax += 0.5; }
-  // округляем границы до красивых значений
-  const wRange = wMax - wMin;
-  const step = wRange <= 1 ? 0.2 : wRange <= 5 ? 1 : wRange <= 20 ? 5 : 10;
-  wMin = Math.floor(wMin / step) * step;
-  wMax = Math.ceil(wMax / step) * step;
+// ── Chart page ────────────────────────────────────────────────────────
+function setPeriod(h,btn) {
+  _periodH=h;
+  document.querySelectorAll('.period-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  renderCharts();
+}
 
-  document.getElementById('chart-wmin').textContent = wMin.toFixed(2);
-  document.getElementById('chart-wmax').textContent = wMax.toFixed(2);
-  document.getElementById('chart-pts').textContent  = pts.length;
+function toggleSeries(s,btn) {
+  _serVisible[s]=!_serVisible[s];
+  btn.classList.toggle('active',_serVisible[s]);
+  const wrap=document.getElementById('cwrap-'+s);
+  if(wrap) wrap.style.display=_serVisible[s]?'':'none';
+  renderCharts();
+}
 
-  // Координатная система: viewBox 0 0 460 140
-  // Отступы: слева 42px (ось Y + метки), снизу 22px (ось X + метки), сверху 8px, справа 8px
-  const W = 460, H = 140;
-  const L = 42, R = 8, T = 8, B = 22;
-  const plotW = W - L - R;
-  const plotH = H - T - B;
-
-  const xS = (i) => L + (i / (pts.length - 1 || 1)) * plotW;
-  const yS = (w) => T + plotH - ((w - wMin) / (wMax - wMin || 1)) * plotH;
-
-  let html = '';
-
-  // Горизонтальные линии сетки и метки оси Y (4 деления)
-  const yTicks = 4;
-  for (let k = 0; k <= yTicks; k++) {
-    const w = wMin + (wMax - wMin) * k / yTicks;
-    const y = yS(w);
-    // gridline
-    html += '<line x1="'+L+'" y1="'+y+'" x2="'+(W-R)+'" y2="'+y+'" stroke="#2a3325" stroke-width="1"/>';
-    // метка
-    const lbl = w % 1 === 0 ? w.toFixed(0) : w.toFixed(1);
-    html += '<text x="'+(L-4)+'" y="'+(y+3.5)+'" text-anchor="end" fill="#7a8c6a" font-size="8">'+lbl+'</text>';
-  }
-
-  // Вертикальные линии сетки и метки оси X (3 точки: начало, середина, конец)
-  const xTickIdx = [0, Math.floor((pts.length-1)/2), pts.length-1];
-  xTickIdx.forEach(i => {
-    if (i < 0 || i >= pts.length) return;
-    const x = xS(i);
-    html += '<line x1="'+x+'" y1="'+T+'" x2="'+x+'" y2="'+(T+plotH)+'" stroke="#2a3325" stroke-width="1"/>';
-    const lbl = pts[i].dt ? pts[i].dt.substring(11,16) : '';
-    const anchor = i === 0 ? 'start' : i === pts.length-1 ? 'end' : 'middle';
-    html += '<text x="'+x+'" y="'+(H-4)+'" text-anchor="'+anchor+'" fill="#7a8c6a" font-size="8">'+lbl+'</text>';
+function filterPts() {
+  if (!_periodH) return _all;
+  const cutoff=Date.now()-_periodH*3600000;
+  const f=_all.filter(d=>{
+    const m=d.dt&&d.dt.match(/(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
+    if(m) return new Date(+m[3],+m[2]-1,+m[1],+m[4],+m[5],+m[6]).getTime()>=cutoff;
+    return true;
   });
-
-  // Дата первой и последней точки под осью X
-  if (pts.length > 0) {
-    const d0 = pts[0].dt ? pts[0].dt.substring(0,10) : '';
-    const d1 = pts[pts.length-1].dt ? pts[pts.length-1].dt.substring(0,10) : '';
-    if (d0) html += '<text x="'+L+'" y="'+(H-4)+'" text-anchor="start" fill="#506040" font-size="7">'+d0+'</text>';
-    if (d1 && d1 !== d0) html += '<text x="'+(W-R)+'" y="'+(H-4)+'" text-anchor="end" fill="#506040" font-size="7">'+d1+'</text>';
+  // Возвращаем fallback если точек меньше 2 (drawLineSvg требует ≥2 точки)
+  if (f.length < 2) {
+    const n=_periodH===1?60:_periodH===6?360:_periodH*60;
+    return _all.slice(-Math.min(n,_all.length));
   }
+  return f;
+}
 
-  // Оси (линии)
-  html += '<line x1="'+L+'" y1="'+T+'" x2="'+L+'" y2="'+(T+plotH)+'" stroke="#506040" stroke-width="1"/>';
-  html += '<line x1="'+L+'" y1="'+(T+plotH)+'" x2="'+(W-R)+'" y2="'+(T+plotH)+'" stroke="#506040" stroke-width="1"/>';
-
-  // Подпись оси Y
-  html += '<text x="6" y="'+(T+plotH/2)+'" text-anchor="middle" fill="#7a8c6a" font-size="8" transform="rotate(-90,6,'+(T+plotH/2)+')">кг</text>';
-
-  // Заливка под графиком
-  let area = 'M '+xS(0)+' '+(T+plotH);
-  let line = 'M '+xS(0)+' '+yS(weights[0]);
-  for (let i = 0; i < pts.length; i++) {
-    const x = xS(i), y = yS(weights[i]);
-    area += ' L '+x+' '+y;
-    if (i > 0) line += ' L '+x+' '+y;
+function renderCharts() {
+  if (!_all.length) {
+    [{id:'chart-w',cy:120},{id:'chart-t',cy:90},{id:'chart-b',cy:70}].forEach(function(s){
+      var svg=document.getElementById(s.id);
+      if(svg) svg.innerHTML='<text x="450" y="'+s.cy+'" text-anchor="middle" fill="#506040" font-size="13">Нет данных</text>';
+    });
+    return;
   }
-  area += ' L '+xS(pts.length-1)+' '+(T+plotH)+' Z';
-  html += '<path d="'+area+'" fill="rgba(245,166,35,0.12)" stroke="none"/>';
-  html += '<path d="'+line+'" fill="none" stroke="#f5a623" stroke-width="1.5"/>';
+  const pts=filterPts();
+  if (!pts.length) return;
+  _tipPts={};
 
-  // Маркер последней точки
-  const lx = xS(pts.length-1), ly = yS(weights[weights.length-1]);
-  html += '<circle cx="'+lx+'" cy="'+ly+'" r="3" fill="#f5a623"/>';
-
-  svg.innerHTML = html;
-}
-
-function loadChart() {
-  fetch('/api/log/json')
-    .then(r => r.json())
-    .then(d => renderChart(d))
-    .catch(() => {});
-}
-// Загружаем график при старте и каждые 5 минут
-loadChart();
-setInterval(loadChart, 300000);
-
-function saveSettings() {
-  const apPass = document.getElementById('cfg-appass').value;
-  const body = {
-    alertDelta: parseFloat(document.getElementById('cfg-alert').value),
-    calibWeight: parseFloat(document.getElementById('cfg-calib').value),
-    emaAlpha: parseFloat(document.getElementById('cfg-ema').value),
-    sleepSec: parseInt(document.getElementById('cfg-sleep').value),
-    lcdBlSec: parseInt(document.getElementById('cfg-bl').value)
-  };
-  if (apPass.length >= 8) body.apPass = apPass;
-  fetch('/api/settings', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(body)
-  })
-  .then(r => r.json())
-  .then(d => showToast(d.ok ? '✓ Сохранено' : '✗ ' + d.msg, !d.ok))
-  .catch(() => showToast('✗ Ошибка', true));
-}
-
-// ── Live data fetch (без перезагрузки страницы) ───────────────────────
-function fetchData() {
-  fetch('/api/data')
-    .then(r => r.json())
-    .then(d => {
-      document.getElementById('w-val').childNodes[0].textContent = d.weight.toFixed(2);
-      document.getElementById('w-ref').textContent = d.prev.toFixed(2);
-      const dlt = (d.weight - d.prev).toFixed(2);
-      const dltEl = document.getElementById('w-delta');
-      dltEl.textContent = (dlt > 0 ? '+' : '') + dlt;
-      dltEl.style.color = dlt >= 0 ? 'var(--green)' : 'var(--red)';
-      const pct = Math.min(100, Math.max(0, d.weight / 60 * 100)).toFixed(0);
-      document.getElementById('w-gauge').style.width = pct + '%';
-      document.getElementById('w-gpct').textContent = pct + '%';
-
-      document.getElementById('t-val').childNodes[0].textContent = d.temp > -90 ? d.temp.toFixed(1) : '--';
-      document.getElementById('h-val').textContent = d.hum > -90 ? d.hum.toFixed(1) : '--';
-      document.getElementById('rtc-val').textContent = d.rtcT > -90 ? d.rtcT.toFixed(1) : '--';
-      const tpct = Math.min(100, Math.max(0, (d.temp + 20) / 80 * 100)).toFixed(0);
-      document.getElementById('t-gauge').style.width = tpct + '%';
-      document.getElementById('t-gpct').textContent = (d.temp > -90 ? d.temp.toFixed(1) : '--') + '°C';
-
-      const srDot = document.getElementById('sr-dot');
-      const srVal = document.getElementById('sr-val');
-      if (srDot && srVal) { srDot.className='dot '+(d.sensor?'ok':'err'); srVal.textContent=d.sensor?'OK':'ОШИБКА'; }
-      const wfDot = document.getElementById('wf-dot');
-      const wfVal = document.getElementById('wf-val');
-      if (wfDot && wfVal) { wfDot.className='dot '+(d.wifi?'ok':'err'); wfVal.textContent=d.wifi?'Подключён':'Нет связи'; }
-      const wkcEl = document.getElementById('wkc-val');
-      if (wkcEl) wkcEl.textContent = d.wakeups !== undefined ? d.wakeups : '--';
-
-      document.getElementById('dt-val').textContent = d.datetime;
-      document.getElementById('upt-val').textContent = d.uptime;
-      if (d.heap !== undefined) {
-        document.getElementById('heap-val').textContent = d.heap + ' b';
-        const hd = document.getElementById('heap-dot');
-        if (d.heap < 10000) { hd.className='dot err'; } else if (d.heap < 30000) { hd.className='dot warn'; } else { hd.className='dot ok'; }
-      }
-      if (d.batV !== undefined) {
-        document.getElementById('bat-val').textContent = d.batV.toFixed(2) + 'V (' + d.batPct + '%)';
-        const bd = document.getElementById('bat-dot');
-        if (d.batPct < 10) { bd.className='dot err'; } else if (d.batPct < 30) { bd.className='dot warn'; } else { bd.className='dot ok'; }
-      }
-      if (d.sdLog !== undefined) {
-        const mode = d.sdFallback ? ' [Flash]' : ' [SD]';
-        document.getElementById('sd-val').textContent = Math.round(d.sdLog/1024) + ' KB лог / ' + Math.round(d.sdFree/1024) + ' KB своб.' + mode;
-        const sd = document.getElementById('sd-dot');
-        sd.className = (d.sdLog===0 && d.sdFree===0) ? 'dot err' : (d.sdFree < 102400 ? 'dot warn' : 'dot ok');
-      }
-      updateCalibLive(d);
-    })
-    .catch(() => {});
-}
-setInterval(fetchData, REFRESH);
-fetchData();
-
-// ── Загрузка конфига форм при старте ──────────────────────────────────
-function loadConfig() {
-  fetch('/api/config')
-    .then(r => r.json())
-    .then(d => {
-      if (d.alertDelta !== undefined)  document.getElementById('cfg-alert').value  = d.alertDelta;
-      if (d.calibWeight !== undefined) document.getElementById('cfg-calib').value  = d.calibWeight;
-      if (d.emaAlpha !== undefined)    document.getElementById('cfg-ema').value    = d.emaAlpha;
-      if (d.sleepSec !== undefined)    document.getElementById('cfg-sleep').value  = d.sleepSec;
-      if (d.lcdBlSec !== undefined)    document.getElementById('cfg-bl').value     = d.lcdBlSec;
-      if (d.tgToken !== undefined)     document.getElementById('tg-token').value   = d.tgToken;
-      if (d.tgChatId !== undefined)    document.getElementById('tg-chatid').value  = d.tgChatId;
-      const wml = document.getElementById('wifi-mode-lbl');
-      if (wml && d.wifiMode !== undefined) wml.textContent = d.wifiMode === 1 ? 'Роутер (STA)' : 'Точка доступа (AP)';
-      const ntpBtn = document.getElementById('ntp-btn');
-      if (ntpBtn && d.wifiMode === 0) { ntpBtn.disabled = true; ntpBtn.title = 'Недоступно в AP режиме'; ntpBtn.textContent = '🕐 NTP (AP)'; }
-    })
-    .catch(() => {});
-}
-loadConfig();
-
-// ── Обновление живых данных калибровки ────────────────────────────────
-function updateCalibLive(d) {
-  if (d.cf !== undefined) {
-    document.getElementById('calib-cf-live').textContent = d.cf.toFixed(2);
-    document.getElementById('calib-ofs-live').textContent = d.offset;
-    const cfVal = document.getElementById('cf-val');
-    const ofsVal = document.getElementById('ofs-val');
-    if (cfVal) cfVal.textContent = d.cf.toFixed(2);
-    if (ofsVal) ofsVal.textContent = d.offset;
+  if (_serVisible.w) {
+    _tipPts.w=pts;
+    const ws=pts.map(d=>parseFloat(d.w)).filter(v=>!isNaN(v));
+    const mn=Math.min(...ws),mx=Math.max(...ws),av=ws.reduce((a,b)=>a+b,0)/ws.length;
+    setText('c-wmin',mn.toFixed(3)); setText('c-wmax',mx.toFixed(3));
+    setText('c-wavg',av.toFixed(3)); setText('c-pts',pts.length);
+    drawLineSvg(document.getElementById('chart-w'),pts,'w','#f5a623',900,260,60,10,12,42,true);
   }
-  if (d.weight !== undefined) document.getElementById('calib-wgt-live').textContent = d.weight.toFixed(3);
+  if (_serVisible.t) {
+    _tipPts.t=pts;
+    const ts=pts.map(d=>parseFloat(d.t)).filter(v=>!isNaN(v)&&v>-90);
+    if(ts.length){setText('c-tmin',Math.min(...ts).toFixed(1));setText('c-tmax',Math.max(...ts).toFixed(1));}
+    drawLineSvg(document.getElementById('chart-t'),pts,'t','#56ccf2',900,260,60,10,12,42,true);
+  }
+  if (_serVisible.b) {
+    _tipPts.b=pts;
+    drawLineSvg(document.getElementById('chart-b'),pts,'b','#6fcf97',900,260,60,10,12,42,true);
+  }
 }
 
-function saveTelegram() {
-  const token  = document.getElementById('tg-token').value.trim();
-  const chatid = document.getElementById('tg-chatid').value.trim();
-  fetch('/api/tg/settings', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({token: token, chatId: chatid})
-  })
-  .then(r=>r.json())
-  .then(d=>showToast(d.ok ? '✓ TG сохранён' : '✗ ' + d.msg, !d.ok))
-  .catch(()=>showToast('✗ Ошибка', true));
-}
-
-function applyCalib() {
-  const cf  = parseFloat(document.getElementById('calib-cf').value);
-  const ofs = document.getElementById('calib-ofs').value;
-  const body = {};
-  if (!isNaN(cf) && cf > 0) body.calibFactor = cf;
-  if (ofs !== '') body.offset = parseInt(ofs);
-  if (Object.keys(body).length === 0) { showToast('✗ Введите значение', true); return; }
-  fetch('/api/calib/set', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(body)
-  })
-  .then(r=>r.json())
-  .then(d=>showToast(d.ok ? '✓ ' + d.msg : '✗ ' + d.msg, !d.ok))
-  .catch(()=>showToast('✗ Ошибка', true));
-}
-
-function doTareAndRefresh() {
-  doAction('/api/tare');
-  setTimeout(fetchData, 1500);
-}
-
-// ── Фичи 12+17: загрузка суточной статистики и информации об улье ────────
-var _seasonRu = {Vesna:'🌱 Весна', Leto:'☀ Лето', Osen:'🍂 Осень', Zima:'❄ Зима'};
-function loadDayStat() {
-  fetch('/api/daystat')
-    .then(r=>r.json())
-    .then(function(d) {
-      document.getElementById('hi-season').textContent = _seasonRu[d.season] || d.season;
-      if (d.valid) {
-        document.getElementById('hi-wrange').textContent = d.wMin.toFixed(2) + ' / ' + d.wMax.toFixed(2) + ' кг';
-        var tr = document.getElementById('hi-trange');
-        if (d.tMin !== null && d.tMin > -90) {
-          tr.textContent = d.tMin.toFixed(1) + ' / ' + d.tMax.toFixed(1) + ' °C';
-        } else {
-          tr.textContent = 'нет данных';
-        }
-        document.getElementById('hi-count').textContent = d.count + ' изм.';
-      }
-      var dEl = document.getElementById('hi-delta');
-      var dlt = d.deltaKg !== undefined ? d.deltaKg : 0;
-      dEl.textContent = (dlt >= 0 ? '+' : '') + dlt.toFixed(2) + ' кг';
-      dEl.style.color = dlt >= 0 ? 'var(--green)' : 'var(--red)';
-      document.getElementById('hi-days').textContent = d.daysSinceStart > 0 ? d.daysSinceStart + ' дн.' : '< 1 дн.';
-    })
-    .catch(function(){});
-}
-// ── Табы для мобильных ────────────────────────────────────────────────
-function showTab(id, el) {
-  document.querySelectorAll('.card').forEach(c => {
-    if(!c.classList.contains('full') && c.id !== 'weight-card' && c.id !== 'hive-info-card') {
-      c.style.display = (id === 'all' || c.innerHTML.toLowerCase().includes(id)) ? 'block' : 'none';
+// ── Universal SVG line drawing ────────────────────────────────────────
+function drawLineSvg(svg,pts,key,color,W,H,L,R,T,B,showAxes) {
+  const pW=W-L-R, pH=H-T-B;
+  const vals=pts.map(d=>parseFloat(d[key])).filter(v=>!isNaN(v)&&v>-90);
+  if (vals.length<2) { svg.innerHTML=`<text x="${W/2}" y="${H/2}" text-anchor="middle" fill="#506040" font-size="13">Нет данных</text>`; return; }
+  // Для температуры и батареи: игнорируем нули при расчёте шкалы (0 = датчик не работал / USB)
+  let scaleVals=(key==='t'||key==='b')?vals.filter(v=>v>0.05):vals;
+  if(scaleVals.length<2) scaleVals=vals;
+  let mn=Math.min(...scaleVals),mx=Math.max(...scaleVals);
+  // Добавляем 5% padding сверху/снизу чтобы линия не прилипала к краям
+  const range=mx-mn||1;
+  mn-=range*0.05; mx+=range*0.05;
+  if(mx===mn){mn-=0.5;mx+=0.5;}
+  const xS=i=>L+i/(pts.length-1||1)*pW;
+  const yS=v=>T+pH-(v-mn)/(mx-mn)*pH;
+  let html='';
+  // grid — 6 горизонтальных линий для лучшей читаемости
+  const yLines=6;
+  for(let k=0;k<=yLines;k++){
+    const v=mn+(mx-mn)*k/yLines,y=yS(v);
+    html+=`<line x1="${L}" y1="${y.toFixed(1)}" x2="${W-R}" y2="${y.toFixed(1)}" stroke="#1a201a" stroke-width="1"/>`;
+    if(showAxes) {
+      const dec=key==='b'?2:key==='t'?1:3;
+      html+=`<text x="${L-5}" y="${(y+4).toFixed(1)}" text-anchor="end" fill="#506040" font-size="12">${v.toFixed(dec)}</text>`;
     }
-  });
-  document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-  if(el) el.classList.add('active');
-  window.scrollTo(0,0);
-}
-
-// ── Консоль логов ─────────────────────────────────────────────────────
-let _logAuto = true;
-function addLog(msg, type='info') {
-  const c = document.getElementById('debug-console');
-  if(!c) return;
-  const div = document.createElement('div');
-  div.style.color = type==='err'?'var(--red)':type==='warn'?'var(--amber)':'var(--text3)';
-  div.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
-  c.appendChild(div);
-  if(_logAuto) c.scrollTop = c.scrollHeight;
-  while(c.childNodes.length > 50) c.removeChild(c.firstChild);
-}
-
-// ── Мастер калибровки ─────────────────────────────────────────────────
-let _calStep = 0;
-function nextCalStep() {
-  _calStep++;
-  const c = document.getElementById('cal-wizard');
-  const b = document.getElementById('cal-btn');
-  if(_calStep === 1) {
-    c.innerHTML = '<b style="color:var(--amber)">ШАГ 1:</b> Снимите всё с весов и нажмите ОК.';
-    b.textContent = 'ОК, ПУСТО';
-  } else if(_calStep === 2) {
-    doAction('/api/tare');
-    addLog('Тарировка выполнена...');
-    c.innerHTML = '<b style="color:var(--amber)">ШАГ 2:</b> Положите груз 5кг (или другой эталон) и введите его вес в граммах ниже.';
-    b.textContent = 'ГОТОВО, ГРУЗ НА ВЕСАХ';
-  } else if(_calStep === 3) {
-    const w = parseFloat(document.getElementById('cfg-calib').value);
-    addLog('Расчёт калибровочного коэффициента для ' + w + 'г...');
-    // Здесь можно добавить запрос на авто-калибровку, если API поддерживает
-    c.innerHTML = '<b style="color:var(--green)">ЗАВЕРШЕНО!</b> Проверьте текущий вес. Если не совпадает, подправьте Cal.Factor вручную.';
-    b.style.display = 'none';
   }
+  // x labels — 5-7 меток равномерно
+  if(showAxes && pts.length>1){
+    const xCount=Math.min(7,pts.length);
+    for(let n=0;n<xCount;n++){
+      const i=Math.round(n*(pts.length-1)/(xCount-1));
+      const x=xS(i),lbl=pts[i].dt?pts[i].dt.substring(11,16):'';
+      const a=n===0?'start':n===xCount-1?'end':'middle';
+      html+=`<line x1="${x.toFixed(1)}" y1="${T}" x2="${x.toFixed(1)}" y2="${T+pH}" stroke="#181d18" stroke-dasharray="3,3" stroke-width="1"/>`;
+      html+=`<text x="${x.toFixed(1)}" y="${H-B+16}" text-anchor="${a}" fill="#506040" font-size="11">${lbl}</text>`;
+    }
+    // date labels at edges — под осью X, не наложение на время
+    const d0=pts[0].dt?pts[0].dt.substring(0,10):'';
+    const d1=pts[pts.length-1].dt?pts[pts.length-1].dt.substring(0,10):'';
+    if(d0) html+=`<text x="${L}" y="${H-B+28}" text-anchor="start" fill="#3d5030" font-size="9">${d0}</text>`;
+    if(d1&&d1!==d0) html+=`<text x="${W-R}" y="${H-B+28}" text-anchor="end" fill="#3d5030" font-size="9">${d1}</text>`;
+  }
+  // axes
+  if(showAxes){
+    html+=`<line x1="${L}" y1="${T}" x2="${L}" y2="${T+pH}" stroke="#506040" stroke-width="1.5"/>`;
+    html+=`<line x1="${L}" y1="${T+pH}" x2="${W-R}" y2="${T+pH}" stroke="#506040" stroke-width="1.5"/>`;
+  }
+  // area + line
+  let area='',line='',li=-1;
+  for(let i=0;i<pts.length;i++){
+    const v=parseFloat(pts[i][key]);
+    if(isNaN(v)||v<=-90) continue;
+    if((key==='t'||key==='b')&&Math.abs(v)<0.05&&scaleVals!==vals) continue;
+    const xx=xS(i).toFixed(1),yy=yS(v).toFixed(1);
+    if(li<0){area=`M ${xx} ${T+pH}`;line=`M ${xx} ${yy}`;}
+    else{area+=` L ${xx} ${yy}`;line+=` L ${xx} ${yy}`;}
+    li=i;
+  }
+  if(li>=0){
+    area+=` L ${xS(li).toFixed(1)} ${T+pH} Z`;
+    html+=`<path d="${area}" fill="${color}18" stroke="none"/>`;
+    html+=`<path d="${line}" fill="none" stroke="${color}" stroke-width="2"/>`;
+    const lv=parseFloat(pts[li][key]);
+    html+=`<circle cx="${xS(li).toFixed(1)}" cy="${yS(lv).toFixed(1)}" r="4" fill="${color}"/>`;
+  }
+  svg.innerHTML=html;
 }
 
-// Перехват fetch для вывода в консоль
-const _origFetch = window.fetch;
-window.fetch = function() {
-  return _origFetch.apply(this, arguments).then(r => {
-    var url = typeof arguments[0] === 'string' ? arguments[0] : (arguments[0] && arguments[0].url) || '';
-    if(url.includes('/api/')) addLog('API: ' + url + ' [' + r.status + ']');
-    return r;
+// ── Tooltip ───────────────────────────────────────────────────────────
+function onTip(e,s){
+  const pts=_tipPts[s];
+  if(!pts||!pts.length) return;
+  const key={w:'w',t:'t',b:'b'}[s];
+  const color={w:'var(--amber)',t:'var(--blue)',b:'var(--green)'}[s];
+  const unit={w:' кг',t:' °C',b:' В'}[s];
+  const W=900,L=60,R=10;
+  const pW=W-L-R;
+  const svg=e.currentTarget, rect=svg.getBoundingClientRect();
+  const svgX=(e.clientX-rect.left)/rect.width*W;
+  let best=-1,bestD=9999;
+  for(let i=0;i<pts.length;i++){const x=L+i/(pts.length-1||1)*pW,d=Math.abs(x-svgX);if(d<bestD){bestD=d;best=i;}}
+  if(best<0||bestD>pW/pts.length*3){hideTip(s);return;}
+  const p=pts[best], v=parseFloat(p[key]);
+  const tip=document.getElementById('tip-'+s);
+  tip.innerHTML=`<b style="color:${color}">${isNaN(v)||v<=-90?'--':v.toFixed(key==='b'?3:2)+unit}</b><br>${p.dt||''}`;
+  tip.style.display='';
+  let tx=(e.clientX-rect.left)+10, ty=(e.clientY-rect.top)-48;
+  if(tx+140>rect.width) tx=(e.clientX-rect.left)-150;
+  if(ty<0) ty=10;
+  tip.style.left=tx+'px'; tip.style.top=ty+'px';
+}
+function hideTip(s){const el=document.getElementById('tip-'+s);if(el)el.style.display='none';}
+
+// ── Export ────────────────────────────────────────────────────────────
+function getExpData() {
+  let data=_all;
+  const from=document.getElementById('exp-from').value;
+  const to=document.getElementById('exp-to').value;
+  if(from||to) data=data.filter(d=>{
+    if(!d.dt) return true;
+    const m=d.dt.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+    if(!m) return true;
+    const ds=`${m[3]}-${m[2]}-${m[1]}`;
+    return (!from||ds>=from)&&(!to||ds<=to);
   });
-};
+  const cols=[];
+  if(document.getElementById('col-dt').checked)  cols.push({k:'dt',h:'Дата/время'});
+  if(document.getElementById('col-w').checked)   cols.push({k:'w',h:'Вес, кг'});
+  if(document.getElementById('col-t').checked)   cols.push({k:'t',h:'Темп, °C'});
+  if(document.getElementById('col-h').checked)   cols.push({k:'h',h:'Влажность, %'});
+  if(document.getElementById('col-bat').checked) cols.push({k:'b',h:'Батарея, В'});
+  return {data,cols};
+}
 
-loadDayStat();
-setInterval(loadDayStat, 60000);
-addLog('Система готова. Ожидание данных...');
+function exportCsv(){
+  const {data,cols}=getExpData();
+  let csv='\uFEFF'+cols.map(c=>c.h).join(',')+'\n';
+  data.forEach(d=>{csv+=cols.map(c=>d[c.k]||'').join(',')+'\n';});
+  dlBlob(new Blob([csv],{type:'text/csv;charset=utf-8'}),'beehive_log.csv');
+}
 
+function previewExport(){
+  const {data,cols}=getExpData();
+  let html=`<tr>${cols.map(c=>`<th>${c.h}</th>`).join('')}</tr>`;
+  data.slice(-10).forEach(d=>{html+=`<tr>${cols.map(c=>`<td>${d[c.k]||''}</td>`).join('')}</tr>`;});
+  document.getElementById('prev-table').innerHTML=html;
+  document.getElementById('preview-wrap').style.display='block';
+}
+
+function exportExcel(){
+  if(typeof XLSX==='undefined'){
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload=_doExcel; document.head.appendChild(s);
+  } else _doExcel();
+}
+function _doExcel(){
+  const {data,cols}=getExpData();
+  const rows=data.map(d=>{const r={};cols.forEach(c=>{r[c.h]=d[c.k]||'';});return r;});
+  const ws=XLSX.utils.json_to_sheet(rows);
+  const vals=data.map(d=>parseFloat(d.w)).filter(v=>!isNaN(v));
+  const stat=[['Параметр','Значение'],['Записей',data.length],
+    ['Мин вес',vals.length?Math.min(...vals).toFixed(3):''],
+    ['Макс вес',vals.length?Math.max(...vals).toFixed(3):''],
+    ['Среднее', vals.length?(vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(3):'']];
+  const ws2=XLSX.utils.aoa_to_sheet(stat);
+  const days={};
+  data.forEach(d=>{const k=d.dt?d.dt.substring(0,10):'?';if(!days[k])days[k]={mn:999,mx:-999,n:0};const v=parseFloat(d.w);if(!isNaN(v)){days[k].mn=Math.min(days[k].mn,v);days[k].mx=Math.max(days[k].mx,v);days[k].n++;}});
+  const ws3=XLSX.utils.aoa_to_sheet([['Дата','Мин кг','Макс кг','Точек'],...Object.entries(days).map(([k,v])=>[k,v.mn.toFixed(3),v.mx.toFixed(3),v.n])]);
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Данные');
+  XLSX.utils.book_append_sheet(wb,ws2,'Статистика');
+  XLSX.utils.book_append_sheet(wb,ws3,'Дневные итоги');
+  XLSX.writeFile(wb,'beehive_log.xlsx');
+}
+
+function dlBlob(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();}
+function dlByDate(){const d=document.getElementById('log-date').value;if(!d){toast('Выберите дату',true);return;}window.open('/api/log?date='+d,'_blank');}
+function dlSdDate(){const d=document.getElementById('exp-date-sd').value;if(!d){toast('Выберите дату',true);return;}window.open('/api/log?date='+d,'_blank');}
+
+// ── Load config ───────────────────────────────────────────────────────
+function loadConfig(){
+  fetch('/api/config').then(r=>r.json()).then(d=>{
+    const setV=(id,v)=>{const el=document.getElementById(id);if(el&&v!==undefined)el.value=v;};
+    setV('cfg-alert',d.alertDelta); setV('cfg-calib',d.calibWeight);
+    setV('cfg-ema',d.emaAlpha);     setV('cfg-sleep',d.sleepSec);
+    setV('cfg-bl',d.lcdBlSec);
+    setV('tg-token',d.tgToken);    setV('tg-chatid',d.tgChatId);
+    if(d.alertDelta) setText('tg-thresh',d.alertDelta+' кг');
+    selWm(parseInt(d.wifiMode||0),true);
+    if(d.wifiSsid) setV('wifi-ssid',d.wifiSsid);
+  }).catch(()=>{});
+}
+
+// ── Save settings ─────────────────────────────────────────────────────
+function saveSettings(){
+  const body={};
+  const g=(id)=>document.getElementById(id);
+  const a=parseFloat(g('cfg-alert').value),c=parseFloat(g('cfg-calib').value);
+  const e=parseFloat(g('cfg-ema').value),s=parseInt(g('cfg-sleep').value),b=parseInt(g('cfg-bl').value);
+  if(!isNaN(a)) body.alertDelta=a;
+  if(!isNaN(c)) body.calibWeight=c;
+  if(!isNaN(e)) body.emaAlpha=e;
+  if(!isNaN(s)) body.sleepSec=s;
+  if(!isNaN(b)) body.lcdBlSec=b;
+  fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(r=>r.json()).then(d=>toast(d.msg||'OK',!d.ok)).catch(()=>toast('Нет связи',true));
+}
+
+// ── Telegram ──────────────────────────────────────────────────────────
+function saveTelegram(){
+  const body={token:document.getElementById('tg-token').value,chatId:document.getElementById('tg-chatid').value};
+  fetch('/api/tg/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(r=>r.json()).then(d=>toast(d.msg||'OK',!d.ok)).catch(()=>toast('Нет связи',true));
+}
+
+// ── WiFi ──────────────────────────────────────────────────────────────
+function selWm(mode, noUpdate){
+  _wifiMode=mode;
+  document.getElementById('wopt-ap').classList.toggle('sel',mode===0);
+  document.getElementById('wopt-sta').classList.toggle('sel',mode===1);
+  document.querySelectorAll('input[name="wm"]').forEach((r,i)=>r.checked=i===mode);
+  const sb=document.getElementById('sta-block');
+  if(sb) sb.style.display=mode===1?'block':'none';
+}
+function saveWifi(){
+  const body={wifiMode:_wifiMode};
+  if(_wifiMode===1){
+    const ssid=document.getElementById('wifi-ssid').value.trim();
+    const pass=document.getElementById('wifi-pass').value;
+    if(!ssid){toast('Введите SSID роутера',true);return;}
+    body.wifiSsid=ssid;
+    if(pass.length>0) body.wifiPass=pass;
+  }
+  fetch('/api/wifi/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(r=>r.json()).then(d=>{
+      toast(d.msg||'OK',!d.ok);
+      if(d.ok) setTimeout(()=>toast('Устройство перезагружается…'),2500);
+    }).catch(()=>toast('Нет связи',true));
+}
+
+// ── AP Password ───────────────────────────────────────────────────────
+function checkPassStrength(inId,barId){
+  const v=document.getElementById(inId).value;
+  const bar=document.getElementById(barId);
+  const len=v.length;
+  const hasUpper=/[A-Z]/.test(v), hasNum=/[0-9]/.test(v), hasSym=/[^A-Za-z0-9]/.test(v);
+  const score=Math.min(4,(len>=8?1:0)+(len>=12?1:0)+(hasUpper?1:0)+(hasNum?1:0)+(hasSym?1:0));
+  const colors=['','var(--red)','var(--red)','var(--amber)','var(--green)'];
+  bar.style.width=(score*25)+'%';
+  bar.style.background=colors[score]||'var(--border)';
+}
+
+function saveApPass(){
+  const np=document.getElementById('ap-pass-new').value;
+  const cp=document.getElementById('ap-pass-confirm').value;
+  if(np.length<8||np.length>23){toast('Пароль: 8–23 символа',true);return;}
+  if(np!==cp){toast('Пароли не совпадают',true);return;}
+  const body={apPass:np};
+  fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(r=>r.json()).then(d=>{
+      toast(d.msg||'OK',!d.ok);
+      if(d.ok){document.getElementById('ap-pass-new').value='';document.getElementById('ap-pass-confirm').value='';}
+    }).catch(()=>toast('Нет связи',true));
+}
+
+// ── Calibration wizard ────────────────────────────────────────────────
+const WIZ=[
+  {l:'Пусто',   b:'<b>Шаг 1: Уберите все грузы.</b><br>Платформа весов должна быть абсолютно пустой. Нажмите «Далее».'},
+  {l:'Тара',    b:'<b>Шаг 2: Тарировка.</b><br>Нажмите «Тарировать» — показание обнулится.<br>Текущий вес должен стать близким к 0.'},
+  {l:'Груз',    b:'<b>Шаг 3: Поставьте эталонный груз.</b><br>Используйте гирю с известной массой (задана в Настройках).<br>Дождитесь стабилизации показания.'},
+  {l:'Cal.F.',  b:'<b>Шаг 4: Подберите Cal.Factor.</b><br>В правой панели «Ручная калибровка» введите CF и нажмите «Применить».<br>Добивайтесь совпадения «Вес (wiz)» с реальной массой груза. Поле CF автозаполнено текущим значением.'},
+  {l:'Готово',  b:'<b>✓ Калибровка завершена!</b><br>Уберите груз → Тарировка → «Сохранить эталон» на главной.'},
+];
+function updateWiz(){
+  WIZ.forEach((_,i)=>{
+    document.getElementById('ws'+i).className='wiz-step'+(i<_wizStep?' done':i===_wizStep?' active':'');
+  });
+  document.getElementById('wiz-body').innerHTML=WIZ[_wizStep].b;
+  const btn=document.getElementById('wiz-btn');
+  btn.textContent=_wizStep===1?'⊘ Тарировать':_wizStep===WIZ.length-1?'↺ Заново':'Далее →';
+}
+function wizNext(){
+  if(_wizStep===1){doApi('/api/tare').then(()=>setTimeout(fetchData,1500));_wizStep++;updateWiz();return;}
+  if(_wizStep===WIZ.length-1){wizReset();return;}
+  _wizStep++;updateWiz();
+}
+function wizReset(){_wizStep=0;updateWiz();}
+
+function applyCalib(){
+  const cf=parseFloat(document.getElementById('calib-cf').value);
+  const ofs=document.getElementById('calib-ofs').value;
+  const body={};
+  if(!isNaN(cf)) body.calibFactor=cf;
+  if(ofs!=='') body.offset=parseInt(ofs);
+  if(Object.keys(body).length===0){toast('Введите значение Cal.Factor',true);return;}
+  fetch('/api/calib/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(r=>r.json()).then(d=>{toast(d.msg||'OK',!d.ok);if(d.ok)fetchData();}).catch(()=>toast('Нет связи',true));
+}
+
+// ── API viewer ────────────────────────────────────────────────────────
+function refreshApiView(){
+  fetch('/api/data').then(r=>r.json()).then(d=>{
+    document.getElementById('api-json').textContent=JSON.stringify(d,null,2);
+  }).catch(()=>{document.getElementById('api-json').textContent='Нет связи';});
+}
+
+// ── Dates init ────────────────────────────────────────────────────────
+(function initDates(){
+  const now=new Date();
+  const fmt=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const today=fmt(now), weekAgo=fmt(new Date(now-7*86400000));
+  ['log-date','exp-date-sd'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=today;});
+  document.getElementById('exp-from').value=weekAgo;
+  document.getElementById('exp-to').value=today;
+})();
+
+// ── Auto refresh ───────────────────────────────────────────────────────
+function autoRefresh(){
+  _start=Date.now(); tickBar(); fetchData();
+  setTimeout(autoRefresh,REFRESH);
+}
+
+// ── Init ──────────────────────────────────────────────────────────────
+updateWiz();
+fetchData();
+setTimeout(autoRefresh,REFRESH);
 </script>
-
-<div class="nav-btm">
-  <div class="nav-item active" onclick="showTab('all', this)">
-    <svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>Главная
-  </div>
-  <div class="nav-item" onclick="showTab('статус', this)">
-    <svg viewBox="0 0 24 24"><path d="M16 11V3H8v6H2v12h20V11h-6zm-6-6h4v14h-4V5zm-6 6h4v8H4v-8zm16 8h-4v-8h4v8z"/></svg>Статус
-  </div>
-  <div class="nav-item" onclick="showTab('настройки', this)">
-    <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>Настройки
-  </div>
-</div>
-
-<div class="card full" style="margin-top:20px;border-style:dashed">
-  <div class="card-title">💻 Консоль отладки</div>
-  <div id="debug-console" style="height:120px;overflow-y:auto;background:#000;padding:8px;font-size:11px;color:var(--text3);line-height:1.4;border:1px solid var(--border)"></div>
-  <div style="margin-top:8px;display:flex;gap:10px">
-    <button class="btn btn-blue" style="min-height:30px;padding:5px 10px" onclick="document.getElementById('debug-console').innerHTML=''">Очистить</button>
-    <label style="font-size:11px;display:flex;align-items:center;gap:5px"><input type="checkbox" checked onchange="_logAuto=this.checked" style="width:auto"> Авто-скролл</label>
-  </div>
-</div>
-
-<div id="modal-cal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);z-index:2000;padding:20px;align-items:center;justify-content:center">
-  <div class="card" style="max-width:400px;width:100%">
-    <div class="card-title">🧙 Мастер калибровки</div>
-    <div id="cal-wizard" style="margin:20px 0;line-height:1.5">Для начала процесса нажмите кнопку ниже.</div>
-    <div style="display:flex;gap:10px">
-      <button class="btn btn-amber" id="cal-btn" onclick="nextCalStep()">Начать</button>
-      <button class="btn btn-red" onclick="document.getElementById('modal-cal').style.display='none'">Отмена</button>
-    </div>
-  </div>
-</div>
-
 </body></html>
+
 )rawhtml";
 
 // Настройки читаются/записываются через Memory.h (web_get_*/save_web_settings)
@@ -923,491 +1261,12 @@ static void _sendJson(bool ok, const String &msg) {
 
 // ─── Страница графика ─────────────────────────────────────────────────────
 static const char CHART_HTML[] PROGMEM = R"rawhtml(
-<!DOCTYPE html><html lang="ru"><head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>📈 График — BeehiveScale</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-:root{--bg:#0d0f0b;--panel:#141710;--border:#2e3829;--amber:#f5a623;--text1:#e8e0d0;--text2:#b0a890;--text3:#7a8c6a;--red:#e05555;--green:#6fcf97}
-body{background:var(--bg);color:var(--text1);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;padding:12px;min-height:100vh}
-h1{font-size:18px;color:var(--amber);margin-bottom:12px;display:flex;align-items:center;gap:10px}
-h1 a{color:var(--text3);font-size:13px;text-decoration:none;font-weight:normal;margin-left:auto}
-h1 a:hover{color:var(--amber)}
-.toolbar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;align-items:center}
-.btn{padding:6px 14px;border:1px solid var(--border);background:var(--panel);color:var(--text1);border-radius:6px;cursor:pointer;font-size:13px;transition:border-color .2s}
-.btn:hover{border-color:var(--amber)}
-.btn.active{border-color:var(--amber);color:var(--amber)}
-.sep{flex:1}
-.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px}
-.chart-wrap{position:relative;width:100%;height:320px;overflow:hidden;user-select:none}
-svg.chart{width:100%;height:100%}
-.tooltip{position:absolute;background:#1e2419;border:1px solid var(--amber);border-radius:6px;padding:6px 10px;font-size:12px;pointer-events:none;display:none;white-space:nowrap;z-index:10}
-.tooltip b{color:var(--amber)}
-.stats{display:flex;flex-wrap:wrap;gap:16px;margin-top:12px;font-size:13px;color:var(--text2)}
-.stats span b{color:var(--text1)}
-.msg{text-align:center;padding:60px 0;color:var(--text3)}
-</style>
-</head><body>
-<h1>📈 График — BeehiveScale <a href="/">← Главная</a></h1>
-<div class="toolbar">
-  <button class="btn" onclick="setPeriod(1)">1 ч</button>
-  <button class="btn" onclick="setPeriod(6)">6 ч</button>
-  <button class="btn active" onclick="setPeriod(24)">24 ч</button>
-  <button class="btn" onclick="setPeriod(0)">Всё</button>
-  <span style="width:1px;background:var(--border);align-self:stretch;margin:0 4px"></span>
-  <button class="btn" id="btnW"  onclick="setSeries('w')" title="Только вес">⚖ Вес</button>
-  <button class="btn" id="btnT"  onclick="setSeries('t')" title="Только темп.">🌡 Темп</button>
-  <button class="btn active" id="btnWT" onclick="setSeries('wt')" title="Вес + темп.">⚖+🌡</button>
-  <span class="sep"></span>
-  <button class="btn" onclick="loadData()">🔄 Обновить</button>
-  <button class="btn" onclick="window.open('/api/log','_blank')" title="Скачать весь лог">⬇ Весь CSV</button>
-  <input type="date" id="export-date" style="padding:5px 8px;font-size:12px;background:var(--panel);border:1px solid var(--border);color:var(--text1);border-radius:4px" title="Выбрать дату для экспорта">
-  <button class="btn" onclick="downloadByDate()" title="Скачать CSV за выбранный день">⬇ За день</button>
-</div>
-<div class="card">
-  <div class="chart-wrap" id="chart-wrap">
-    <div class="msg" id="chart-msg">Загрузка...</div>
-    <svg class="chart" id="chart-svg" style="display:none"></svg>
-    <div class="tooltip" id="tooltip"></div>
-  </div>
-  <div class="chart-wrap" id="chart-wrap-t" style="height:160px;margin-top:8px;display:none">
-    <svg class="chart" id="chart-svg-t" viewBox="0 0 800 140" preserveAspectRatio="none"></svg>
-    <div class="tooltip" id="tooltip-t"></div>
-  </div>
-  <div class="stats" id="stats" style="display:none">
-    <span>Вес — Мин: <b id="s-min">--</b> Макс: <b id="s-max">--</b> Ср: <b id="s-avg">--</b> кг</span>
-    <span id="s-temp-stat" style="color:var(--blue)">Темп — Мин: <b id="s-tmin">--</b> Макс: <b id="s-tmax">--</b> °C</span>
-    <span>Точек: <b id="s-pts">0</b></span>
-    <span>Период: <b id="s-from">--</b> — <b id="s-to">--</b></span>
-  </div>
-</div>
-<script>
-var allData = [];
-var period = 24;
-var series = 'wt'; // 'w' | 't' | 'wt'
-
-function setPeriod(h) {
-  period = h;
-  document.querySelectorAll('.toolbar .btn').forEach(function(b){
-    var lbl = b.textContent.trim();
-    if (lbl==='1 ч'||lbl==='6 ч'||lbl==='24 ч'||lbl==='Всё') b.classList.remove('active');
-  });
-  var labels = {1:'1 ч',6:'6 ч',24:'24 ч',0:'Всё'};
-  document.querySelectorAll('.toolbar .btn').forEach(function(b){
-    if (b.textContent.trim() === (labels[h]||'')) b.classList.add('active');
-  });
-  renderAll();
-}
-
-function setSeries(s) {
-  series = s;
-  ['btnW','btnT','btnWT'].forEach(function(id){ var el=document.getElementById(id); if(el) el.classList.remove('active'); });
-  var map = {w:'btnW', t:'btnT', wt:'btnWT'};
-  var el = document.getElementById(map[s]);
-  if (el) el.classList.add('active');
-  renderAll();
-}
-
-function renderAll() {
-  renderChart();
-  var wrapT = document.getElementById('chart-wrap-t');
-  var stT   = document.getElementById('s-temp-stat');
-  if (series === 't' || series === 'wt') {
-    if (wrapT) wrapT.style.display = '';
-    if (stT)   stT.style.display   = '';
-    renderTempChart();
-  } else {
-    if (wrapT) wrapT.style.display = 'none';
-    if (stT)   stT.style.display   = 'none';
-  }
-}
-
-function parseDate(s) {
-  // формат "DD.MM.YYYY HH:MM:SS"
-  if (!s) return null;
-  var m = s.match(/(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
-  if (m) return new Date(+m[3],+m[2]-1,+m[1],+m[4],+m[5],+m[6]);
-  return new Date(s);
-}
-
-function loadData() {
-  document.getElementById('chart-msg').style.display='';
-  document.getElementById('chart-msg').textContent='Загрузка...';
-  document.getElementById('chart-svg').style.display='none';
-  document.getElementById('stats').style.display='none';
-  fetch('/api/log/json')
-    .then(r=>r.json())
-    .then(function(d){ allData=d; renderAll(); })
-    .catch(function(){ document.getElementById('chart-msg').textContent='Ошибка загрузки данных'; });
-}
-
-function renderChart() {
-  var msg = document.getElementById('chart-msg');
-  var svgEl = document.getElementById('chart-svg');
-  if (!allData || allData.length === 0) {
-    msg.textContent='Нет данных'; msg.style.display=''; svgEl.style.display='none'; return;
-  }
-
-  // Фильтр по периоду
-  var pts = allData;
-  if (period > 0) {
-    var cutoff = Date.now() - period * 3600000;
-    pts = allData.filter(function(d) {
-      var t = parseDate(d.dt);
-      return t && t.getTime() >= cutoff;
-    });
-    // Если нет данных с таймштампами — берём последние N точек
-    if (pts.length === 0) {
-      var n = period === 1 ? 60 : period === 6 ? 360 : 1440;
-      pts = allData.slice(-Math.min(n, allData.length));
-    }
-  }
-  if (pts.length === 0) {
-    msg.textContent='Нет данных за выбранный период'; msg.style.display=''; svgEl.style.display='none'; return;
-  }
-  msg.style.display='none'; svgEl.style.display='';
-
-  var weights = pts.map(function(d){ return parseFloat(d.w); }).filter(function(v){ return !isNaN(v); });
-  var wMin = Math.min.apply(null,weights);
-  var wMax = Math.max.apply(null,weights);
-  if (wMax === wMin) { wMin -= 0.5; wMax += 0.5; }
-  var wRange = wMax - wMin;
-  var step = wRange <= 1 ? 0.2 : wRange <= 5 ? 1 : wRange <= 20 ? 5 : 10;
-  var wMinR = Math.floor(wMin/step)*step;
-  var wMaxR = Math.ceil(wMax/step)*step;
-
-  // Статистика
-  var avg = weights.reduce(function(a,b){return a+b;},0)/weights.length;
-  document.getElementById('s-min').textContent = wMin.toFixed(2);
-  document.getElementById('s-max').textContent = wMax.toFixed(2);
-  document.getElementById('s-avg').textContent = avg.toFixed(2);
-  document.getElementById('s-pts').textContent = pts.length;
-  document.getElementById('s-from').textContent = pts[0].dt ? pts[0].dt.substring(0,16) : '--';
-  document.getElementById('s-to').textContent   = pts[pts.length-1].dt ? pts[pts.length-1].dt.substring(0,16) : '--';
-  document.getElementById('stats').style.display='';
-
-  // Размеры SVG (viewBox)
-  var W=800, H=300, L=52, R=12, T=12, B=32;
-  var pW=W-L-R, pH=H-T-B;
-  svgEl.setAttribute('viewBox','0 0 '+W+' '+H);
-
-  function xS(i){ return L + (i/(pts.length-1||1))*pW; }
-  function yS(w){ return T + pH - ((w-wMinR)/(wMaxR-wMinR||1))*pH; }
-
-  var html='';
-
-  // Горизонтальная сетка + метки Y
-  var yTicks = Math.round((wMaxR-wMinR)/step);
-  if (yTicks < 2) yTicks = 4;
-  if (yTicks > 8) yTicks = 8;
-  for (var k=0; k<=yTicks; k++) {
-    var w = wMinR + (wMaxR-wMinR)*k/yTicks;
-    var y = yS(w);
-    var isDark = (k%2===0);
-    html += '<line x1="'+L+'" y1="'+y.toFixed(1)+'" x2="'+(W-R)+'" y2="'+y.toFixed(1)+'" stroke="'+(isDark?'#252e1f':'#1e261a')+'" stroke-width="1"/>';
-    var lbl = (w%1===0) ? w.toFixed(0) : w.toFixed(1);
-    html += '<text x="'+(L-6)+'" y="'+(y+4).toFixed(1)+'" text-anchor="end" fill="#7a8c6a" font-size="11">'+lbl+'</text>';
-  }
-
-  // Вертикальная сетка + метки X (5 точек)
-  var xTicks = Math.min(5, pts.length);
-  for (var t=0; t<xTicks; t++) {
-    var idx = Math.round(t*(pts.length-1)/(xTicks-1||1));
-    var x = xS(idx);
-    html += '<line x1="'+x.toFixed(1)+'" y1="'+T+'" x2="'+x.toFixed(1)+'" y2="'+(T+pH)+'" stroke="#1e261a" stroke-width="1"/>';
-    var lbl2 = pts[idx].dt ? pts[idx].dt.substring(11,16) : '';
-    var anchor = t===0?'start':t===xTicks-1?'end':'middle';
-    html += '<text x="'+x.toFixed(1)+'" y="'+(H-6)+'" text-anchor="'+anchor+'" fill="#7a8c6a" font-size="10">'+lbl2+'</text>';
-  }
-
-  // Даты по краям оси X
-  var d0 = pts[0].dt ? pts[0].dt.substring(0,10) : '';
-  var d1 = pts[pts.length-1].dt ? pts[pts.length-1].dt.substring(0,10) : '';
-  if (d0) html += '<text x="'+L+'" y="'+(H-6)+'" text-anchor="start" fill="#506040" font-size="9">'+d0+'</text>';
-  if (d1 && d1!==d0) html += '<text x="'+(W-R)+'" y="'+(H-6)+'" text-anchor="end" fill="#506040" font-size="9">'+d1+'</text>';
-
-  // Оси
-  html += '<line x1="'+L+'" y1="'+T+'" x2="'+L+'" y2="'+(T+pH)+'" stroke="#506040" stroke-width="1.5"/>';
-  html += '<line x1="'+L+'" y1="'+(T+pH)+'" x2="'+(W-R)+'" y2="'+(T+pH)+'" stroke="#506040" stroke-width="1.5"/>';
-
-  // Подпись оси Y
-  html += '<text x="12" y="'+(T+pH/2)+'" text-anchor="middle" fill="#7a8c6a" font-size="11" transform="rotate(-90,12,'+(T+pH/2)+')">кг</text>';
-
-  // Заливка
-  var area = 'M '+xS(0).toFixed(1)+' '+(T+pH);
-  var line = 'M '+xS(0).toFixed(1)+' '+yS(weights[0]).toFixed(1);
-  for (var i=0; i<pts.length; i++) {
-    var xx=xS(i), yy=yS(weights[i]);
-    area += ' L '+xx.toFixed(1)+' '+yy.toFixed(1);
-    if (i>0) line += ' L '+xx.toFixed(1)+' '+yy.toFixed(1);
-  }
-  area += ' L '+xS(pts.length-1).toFixed(1)+' '+(T+pH)+' Z';
-  html += '<path d="'+area+'" fill="rgba(245,166,35,0.10)" stroke="none"/>';
-  html += '<path d="'+line+'" fill="none" stroke="#f5a623" stroke-width="2"/>';
-
-  // Маркер последней точки
-  var lx=xS(pts.length-1), ly=yS(weights[weights.length-1]);
-  html += '<circle cx="'+lx.toFixed(1)+'" cy="'+ly.toFixed(1)+'" r="4" fill="#f5a623"/>';
-
-  // Невидимые точки для tooltip (поверх всего)
-  for (var i=0; i<pts.length; i++) {
-    html += '<circle class="dot" data-i="'+i+'" cx="'+xS(i).toFixed(1)+'" cy="'+yS(weights[i]).toFixed(1)+'" r="5" fill="transparent" stroke="none"/>';
-  }
-
-  svgEl.innerHTML = html;
-
-  // Tooltip через mousemove по SVG
-  var wrap = document.getElementById('chart-wrap');
-  var tooltip = document.getElementById('tooltip');
-  svgEl.addEventListener('mousemove', function(e) {
-    var rect = svgEl.getBoundingClientRect();
-    var mx = e.clientX - rect.left;
-    // найти ближайшую точку по X
-    var svgX = mx / rect.width * W;
-    var best = -1, bestDist = 9999;
-    for (var i=0; i<pts.length; i++) {
-      var d = Math.abs(xS(i) - svgX);
-      if (d < bestDist) { bestDist=d; best=i; }
-    }
-    if (best < 0 || bestDist > W/pts.length*2) { tooltip.style.display='none'; return; }
-    var p = pts[best];
-    tooltip.innerHTML = '<b>'+parseFloat(p.w).toFixed(3)+' кг</b><br>'+( p.dt||'');
-    if (p.t !== undefined) tooltip.innerHTML += '<br>🌡 '+parseFloat(p.t).toFixed(1)+' °C';
-    tooltip.style.display = '';
-    var tx = e.clientX - rect.left + 12;
-    var ty = e.clientY - rect.top - 40;
-    if (tx + 130 > rect.width) tx = e.clientX - rect.left - 140;
-    tooltip.style.left = tx + 'px';
-    tooltip.style.top  = ty + 'px';
-  });
-  svgEl.addEventListener('mouseleave', function() { tooltip.style.display='none'; });
-
-  // Скрываем вес если показываем только температуру
-  svgEl.style.display = (series === 't') ? 'none' : '';
-  document.getElementById('chart-wrap').style.display = (series === 't') ? 'none' : '';
-}
-
-// ── Фича 15: График температуры ───────────────────────────────────────────
-function renderTempChart() {
-  var svgEl = document.getElementById('chart-svg-t');
-  var wrap  = document.getElementById('chart-wrap-t');
-  if (!svgEl) return;
-
-  // Фильтр по периоду (аналогично renderChart)
-  var pts = allData;
-  if (period > 0) {
-    var cutoff = Date.now() - period * 3600000;
-    pts = allData.filter(function(d){ var t=parseDate(d.dt); return t && t.getTime()>=cutoff; });
-    if (pts.length === 0) { var n = period===1?60:period===6?360:1440; pts=allData.slice(-Math.min(n,allData.length)); }
-  }
-
-  var temps = pts.map(function(d){ return parseFloat(d.t); }).filter(function(v){ return !isNaN(v) && v > -90; });
-  if (temps.length === 0) { svgEl.innerHTML='<text x="400" y="70" text-anchor="middle" fill="#506040" font-size="10">Нет данных температуры</text>'; return; }
-
-  var tMin = Math.min.apply(null, temps);
-  var tMax = Math.max.apply(null, temps);
-  if (tMax === tMin) { tMin -= 1; tMax += 1; }
-
-  // Статистика
-  document.getElementById('s-tmin').textContent = tMin.toFixed(1);
-  document.getElementById('s-tmax').textContent = tMax.toFixed(1);
-
-  var W=800, H=120, L=44, R=10, T=8, B=22;
-  var pW=W-L-R, pH=H-T-B;
-  svgEl.setAttribute('viewBox','0 0 '+W+' '+H);
-
-  var xS = function(i){ return L + i/(pts.length-1||1)*pW; };
-  var yS = function(v){ return T + pH - (v-tMin)/(tMax-tMin||1)*pH; };
-
-  var html = '';
-
-  // Сетка
-  for (var k=0; k<=3; k++) {
-    var tv = tMin + (tMax-tMin)*k/3;
-    var ty = yS(tv);
-    html += '<line x1="'+L+'" y1="'+ty.toFixed(1)+'" x2="'+(W-R)+'" y2="'+ty.toFixed(1)+'" stroke="#1e2e1e" stroke-width="1"/>';
-    html += '<text x="'+(L-4)+'" y="'+(ty+3.5).toFixed(1)+'" text-anchor="end" fill="#6a8c7a" font-size="8">'+tv.toFixed(1)+'</text>';
-  }
-
-  // Метки оси X
-  var xTicks = [0, Math.floor((pts.length-1)/2), pts.length-1];
-  xTicks.forEach(function(i){
-    if (i < 0 || i >= pts.length) return;
-    var x = xS(i), lbl = pts[i].dt ? pts[i].dt.substring(11,16) : '';
-    html += '<line x1="'+x.toFixed(1)+'" y1="'+T+'" x2="'+x.toFixed(1)+'" y2="'+(T+pH)+'" stroke="#1e2e1e" stroke-width="1"/>';
-    var anchor = i===0?'start':i===pts.length-1?'end':'middle';
-    html += '<text x="'+x.toFixed(1)+'" y="'+(H-4)+'" text-anchor="'+anchor+'" fill="#6a8c7a" font-size="8">'+lbl+'</text>';
-  });
-
-  // Оси
-  html += '<line x1="'+L+'" y1="'+T+'" x2="'+L+'" y2="'+(T+pH)+'" stroke="#506040" stroke-width="1.5"/>';
-  html += '<line x1="'+L+'" y1="'+(T+pH)+'" x2="'+(W-R)+'" y2="'+(T+pH)+'" stroke="#506040" stroke-width="1.5"/>';
-  html += '<text x="10" y="'+(T+pH/2)+'" text-anchor="middle" fill="#6a8c7a" font-size="9" transform="rotate(-90,10,'+(T+pH/2)+')">°C</text>';
-
-  // Линия температуры
-  var tPts = pts.filter(function(d){ return !isNaN(parseFloat(d.t)) && parseFloat(d.t) > -90; });
-  if (tPts.length > 1) {
-    var area = '', line = '';
-    var firstI = true;
-    for (var i=0; i<pts.length; i++) {
-      var tv2 = parseFloat(pts[i].t);
-      if (isNaN(tv2) || tv2 <= -90) continue;
-      var xx = xS(i), yy = yS(tv2);
-      if (firstI) { area = 'M '+xx.toFixed(1)+' '+(T+pH); line = 'M '+xx.toFixed(1)+' '+yy.toFixed(1); firstI=false; }
-      area += ' L '+xx.toFixed(1)+' '+yy.toFixed(1);
-      line += ' L '+xx.toFixed(1)+' '+yy.toFixed(1);
-    }
-    if (!firstI) {
-      area += ' L '+xS(pts.length-1).toFixed(1)+' '+(T+pH)+' Z';
-      html += '<path d="'+area+'" fill="rgba(86,204,242,0.10)" stroke="none"/>';
-      html += '<path d="'+line+'" fill="none" stroke="#56ccf2" stroke-width="2"/>';
-      // Маркер последней
-      var lastIdx = pts.length-1;
-      while (lastIdx > 0 && (isNaN(parseFloat(pts[lastIdx].t)) || parseFloat(pts[lastIdx].t) <= -90)) lastIdx--;
-      html += '<circle cx="'+xS(lastIdx).toFixed(1)+'" cy="'+yS(parseFloat(pts[lastIdx].t)).toFixed(1)+'" r="4" fill="#56ccf2"/>';
-    }
-  }
-  svgEl.innerHTML = html;
-
-  // Tooltip
-  var tooltip2 = document.getElementById('tooltip-t');
-  svgEl.addEventListener('mousemove', function(e){
-    var rect = svgEl.getBoundingClientRect();
-    var svgX = (e.clientX - rect.left) / rect.width * W;
-    var best=-1, bestDist=9999;
-    for (var i=0; i<pts.length; i++) {
-      var d2 = Math.abs(xS(i)-svgX);
-      if (d2 < bestDist) { bestDist=d2; best=i; }
-    }
-    if (best < 0 || bestDist > W/pts.length*2) { tooltip2.style.display='none'; return; }
-    var p = pts[best];
-    var tv3 = parseFloat(p.t);
-    tooltip2.innerHTML = '<b>'+(isNaN(tv3)||tv3<-90?'--':tv3.toFixed(1)+' °C')+'</b><br>'+(p.dt||'');
-    tooltip2.style.display = '';
-    var tx = e.clientX-rect.left+12, ty = e.clientY-rect.top-40;
-    if (tx+130>rect.width) tx = e.clientX-rect.left-140;
-    tooltip2.style.left=tx+'px'; tooltip2.style.top=ty+'px';
-  });
-  svgEl.addEventListener('mouseleave', function(){ tooltip2.style.display='none'; });
-}
-
-function downloadByDate() {
-  var d = document.getElementById('export-date').value;
-  if (!d) {
-    alert('Выберите дату');
-    return;
-  }
-  window.open('/api/log?date=' + d, '_blank');
-}
-
-// Ставим дату по умолчанию — сегодня (если возможно)
-(function() {
-  var el = document.getElementById('export-date');
-  if (!el) return;
-  var now = new Date();
-  var y = now.getFullYear();
-  var m = String(now.getMonth()+1).padStart(2,'0');
-  var dd = String(now.getDate()).padStart(2,'0');
-  el.value = y + '-' + m + '-' + dd;
-})();
-
-loadData();
-</script>
-</body></html>
+<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=/"></head><body></body></html>
 )rawhtml";
 
 // ─── Страница настроек WiFi (/wifi) ──────────────────────────────────────
 static const char WIFI_HTML[] PROGMEM = R"rawhtml(
-<!DOCTYPE html><html lang="ru"><head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>📶 Wi-Fi — BeehiveScale</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-:root{--bg:#0d0f0b;--panel:#141710;--border:#2e3829;--amber:#f5a623;--text1:#e8e0d0;--text2:#b0a890;--text3:#7a8c6a;--red:#e05555;--green:#6fcf97;--blue:#56ccf2}
-body{background:var(--bg);color:var(--text1);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;padding:16px;max-width:500px;margin:0 auto}
-h1{font-size:18px;color:var(--amber);margin-bottom:16px;display:flex;align-items:center;gap:10px}
-h1 a{color:var(--text3);font-size:13px;text-decoration:none;font-weight:normal;margin-left:auto}
-h1 a:hover{color:var(--amber)}
-.card{background:var(--panel);border:1px solid var(--border);border-top:2px solid var(--amber);border-radius:10px;padding:16px;margin-bottom:16px}
-.card-title{font-size:13px;font-weight:600;color:var(--amber);margin-bottom:12px;letter-spacing:.5px}
-.form-row{margin-bottom:10px}
-.form-row label{display:block;font-size:11px;color:var(--text3);margin-bottom:4px;letter-spacing:.5px;text-transform:uppercase}
-.form-row input{width:100%;padding:7px 10px;background:#0d0f0b;border:1px solid var(--border);color:var(--text1);border-radius:5px;font-size:13px}
-.radio-group{display:flex;gap:8px;margin-bottom:12px}
-.radio-opt{display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;background:#1c2018;padding:12px;border:1px solid var(--border);border-radius:6px;transition:border-color .2s}
-.radio-opt:hover{border-color:var(--amber)}
-.radio-opt input[type=radio]{accent-color:var(--amber)}
-.radio-opt span{font-size:13px;line-height:1.4}
-.radio-opt small{color:var(--text3);font-size:11px}
-.btn{padding:8px 18px;border:1px solid var(--border);background:var(--panel);color:var(--text1);border-radius:6px;cursor:pointer;font-size:13px}
-.btn-green{border-color:var(--green);color:var(--green)}
-.btn-green:hover{background:var(--green);color:#000}
-.hint{font-size:11px;color:var(--text3);margin-top:12px;line-height:1.6}
-.toast{position:fixed;bottom:20px;right:20px;background:var(--panel);border:1px solid var(--amber);border-radius:8px;padding:10px 16px;font-size:13px;transform:translateY(80px);transition:transform .3s;z-index:200}
-.toast.show{transform:none}
-.toast.err{border-color:var(--red);color:var(--red)}
-</style></head><body>
-<h1>📶 Настройки Wi-Fi <a href="/">← Главная</a></h1>
-<div class="card">
-  <div class="card-title">Режим подключения</div>
-  <div class="radio-group">
-    <label class="radio-opt">
-      <input type="radio" name="wm" id="wm-ap" value="0" __WF_AP__ onchange="onChange()">
-      <span>📡 Точка доступа (AP)<br><small>Устройство создаёт сеть BeehiveScale<br>IP: 192.168.4.1</small></span>
-    </label>
-    <label class="radio-opt">
-      <input type="radio" name="wm" id="wm-sta" value="1" __WF_STA__ onchange="onChange()">
-      <span>🌐 Роутер (STA)<br><small>Подключение к домашней сети<br>IP: от DHCP роутера</small></span>
-    </label>
-  </div>
-  <div id="sta-block" style="display:__WF_STABLK__">
-    <div class="form-row"><label>SSID роутера</label>
-      <input type="text" id="ssid" value="__WF_SSID__" maxlength="32" placeholder="Название Wi-Fi сети" autocomplete="off">
-    </div>
-    <div class="form-row"><label>Пароль роутера</label>
-      <input type="password" id="pass" value="" maxlength="32" placeholder="Пароль (оставьте пустым чтобы не менять)" autocomplete="new-password">
-    </div>
-  </div>
-  <button class="btn btn-green" onclick="save()">💾 Сохранить и перезагрузить</button>
-  <div class="hint">
-    AP режим: подключайтесь напрямую, веб на 192.168.4.1<br>
-    STA режим: доступен NTP-время и Telegram-уведомления
-  </div>
-</div>
-<div class="toast" id="toast"></div>
-<script>
-function onChange(){
-  document.getElementById('sta-block').style.display=document.getElementById('wm-sta').checked?'block':'none';
-}
-function showToast(msg,err,ms){
-  var el=document.getElementById('toast');
-  el.textContent=msg;el.className='toast'+(err?' err':'')+' show';
-  setTimeout(function(){el.classList.remove('show');},ms||3000);
-}
-function save(){
-  var mode=document.querySelector('input[name="wm"]:checked').value;
-  var body={wifiMode:parseInt(mode)};
-  if(mode=='1'){
-    var ssid=document.getElementById('ssid').value.trim();
-    var pass=document.getElementById('pass').value;
-    if(!ssid){showToast('Введите SSID роутера',true);return;}
-    body.wifiSsid=ssid;
-    if(pass.length>0)body.wifiPass=pass;
-  }
-  fetch('/api/wifi/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-  .then(function(r){return r.json();})
-  .then(function(d){
-    if(d.ok){
-      var isSta=(mode=='1');
-      showToast(isSta?'Сохранено! Подключитесь к роутеру → beehivescale.local':'Сохранено! Подключитесь к сети BeehiveScale → 192.168.4.1',false,9000);
-    }else{showToast('Ошибка: '+d.msg,true);}
-  })
-  .catch(function(){showToast('Ошибка связи',true);});
-}
-</script>
-</body></html>
+<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=/"></head><body></body></html>
 )rawhtml";
 
 // HTML-экранирование строки (защита от XSS)
@@ -1478,6 +1337,7 @@ static void _handleConfig() {
   doc["sleepSec"]    = (unsigned long)get_sleep_sec();
   doc["lcdBlSec"]    = (unsigned int)get_lcd_bl_sec();
   doc["wifiMode"]    = (int)get_wifi_mode();
+  { char ss[33]; get_wifi_ssid(ss, sizeof(ss)); doc["wifiSsid"] = ss; }
   {
     char tgTok[50], tgCid[16];
     get_tg_token(tgTok, sizeof(tgTok));
@@ -1492,7 +1352,7 @@ static void _handleConfig() {
 static void _handleData() {
   if (!_auth()) return;
   _activity();
-  StaticJsonDocument<384> doc;
+  StaticJsonDocument<512> doc;
   doc["weight"]   = *_wd.weight;
   doc["ref"]      = *_wd.lastSavedWeight;
   doc["prev"]     = *_wd.prevWeight;
@@ -1508,9 +1368,10 @@ static void _handleData() {
   doc["offset"]   = *_wd.offset;
   doc["batV"]     = *_wd.batVoltage;
   doc["batPct"]   = *_wd.batPercent;
-  doc["sdLog"]    = (unsigned long)log_size();
-  doc["sdFree"]   = (unsigned long)log_free_space();
+  doc["sdLog"]      = (unsigned long)log_size();
+  doc["sdFree"]     = (unsigned long)log_free_space();
   doc["sdFallback"] = log_using_fallback();
+  doc["sdOk"]       = log_fs_ok() ? 1 : 0;
 #if defined(ESP32) || defined(ESP8266)
   doc["heap"]     = ESP.getFreeHeap();
 #else
@@ -1627,13 +1488,13 @@ static void _handleNtp() {
 static void _handleChart() {
   if (!_auth()) return;
   _activity();
-  _sendProgmemChunked(CHART_HTML);
+  _sendProgmemChunked(PAGE_HTML);
 }
 
 static void _handleWifi() {
   if (!_auth()) return;
   _activity();
-  _srv.send(200, "text/html; charset=utf-8", _buildWifiPage());
+  _sendProgmemChunked(PAGE_HTML);
 }
 
 // ─── /api/tg/settings  POST — сохранить Telegram токен и chat_id ─────────
@@ -1721,6 +1582,7 @@ static void _handleNotFound() {
 // ─── /api/log  GET — скачать CSV-лог (опционально: ?date=YYYY-MM-DD) ─────
 static void _handleLog() {
   if (!_auth()) return;
+  _activity();
   if (!log_exists()) {
     _srv.send(404, "text/plain", "Log not found");
     return;
@@ -1728,10 +1590,15 @@ static void _handleLog() {
   String date = _srv.arg("date");  // "" если параметр не передан
   if (date.length() == 0) {
     // Без фильтра — стримим весь файл напрямую
+    File f;
 #ifdef USE_SD_CARD
-    File f = SD.open(LOG_FILE, FILE_READ);
+    if (log_using_fallback()) {
+      f = LittleFS.open(LOG_FILE, "r");
+    } else {
+      f = SD.open(LOG_FILE, FILE_READ);
+    }
 #else
-    File f = LOG_FS.open(LOG_FILE, "r");
+    f = LOG_FS.open(LOG_FILE, "r");
 #endif
     if (!f) { _srv.send(500, "text/plain", "Cannot open log"); return; }
     _srv.sendHeader("Content-Disposition", "attachment; filename=\"beehive_log.csv\"");
@@ -1750,8 +1617,7 @@ static void _handleLog() {
         StrStream(String &b) : buf(b) {}
         size_t write(uint8_t c) override { buf += (char)c; return 1; }
         size_t write(const uint8_t *b, size_t s) override {
-          buf.reserve(buf.length() + s);
-          for (size_t i=0; i<s; i++) buf += (char)b[i];
+          buf.concat((const char*)b, s);
           return s;
         }
         int available() override { return 0; }
@@ -1811,6 +1677,7 @@ static void _handleDayStat() {
 // ─── /api/log/clear  POST — очистить лог ─────────────────────────────────
 static void _handleLogClear() {
   if (!_auth()) return;
+  _activity();
   log_clear();
   _srv.send(200, "application/json", "{\"ok\":true}");
 }
@@ -1818,7 +1685,8 @@ static void _handleLogClear() {
 // ─── /api/log/json  GET — лог в JSON ─────────────────────────────────────
 static void _handleLogJson() {
   if (!_auth()) return;
-  String json = log_to_json(500);
+  _activity();
+  String json = log_to_json(100);
   _srv.send(200, "application/json", json);
 }
 

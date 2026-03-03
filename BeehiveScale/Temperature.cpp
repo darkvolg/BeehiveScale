@@ -12,6 +12,9 @@ static bool _firstRead = true;
 
 bool temp_init() {
 #ifdef TEMP_SENSOR_DS18B20
+  // После Serial.end() GPIO3 (RX) может остаться в UART-mux режиме.
+  // Явно переключаем в INPUT перед инициализацией OneWire.
+  pinMode(TEMP_PIN, INPUT);
   _ds.begin();
   uint8_t count = _ds.getDeviceCount();
   Serial.print(F("[Temp] DS18B20 sensors found: "));

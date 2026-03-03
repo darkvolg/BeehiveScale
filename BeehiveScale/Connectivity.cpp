@@ -422,8 +422,48 @@ bool ntp_sync_time() {
   }
 
 #elif defined(ESP8266)
-  Serial.println(F("[NTP] ESP8266: use compile time"));
-  return false;
+  configTime(NTP_TIMEZONE * 3600, 0, NTP_SERVER_1, NTP_SERVER_2);
+
+  int retry = 0;
+  Serial.print(F("[NTP] Waiting"));
+  time_t now = 0;
+  while (now < 100000 && retry < 15) {
+    delay(1000);
+    ESP.wdtFeed();
+    yield();
+    now = time(nullptr);
+    retry++;
+    Serial.print(F("."));
+  }
+  Serial.println();
+
+  if (now < 100000) {
+    Serial.println(F("[NTP] Sync failed!"));
+    return false;
+  }
+
+  struct tm *timeinfo = localtime(&now);
+  char timeStr[64];
+  strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", timeinfo);
+  Serial.print(F("[NTP] Got time: "));
+  Serial.println(timeStr);
+
+  if (rtc_set(
+    timeinfo->tm_year + 1900,
+    timeinfo->tm_mon + 1,
+    timeinfo->tm_mday,
+    timeinfo->tm_hour,
+    timeinfo->tm_min,
+    timeinfo->tm_sec
+  )) {
+    Serial.println(F("[NTP] Time set to RTC!"));
+    _lastNtpSync = millis();
+    _ntpInitialized = true;
+    return true;
+  } else {
+    Serial.println(F("[NTP] RTC error"));
+    return false;
+  }
 #endif
 
   return false;

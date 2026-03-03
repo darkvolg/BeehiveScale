@@ -39,7 +39,7 @@
 #define WEIGHT_SAVE_MS    300000UL
 #define WEIGHT_SAVE_THR     0.05f
 #define TARE_COUNT             4
-#define TARE_TIMEOUT_MS     3000UL
+#define TARE_TIMEOUT_MS     5000UL
 #define MENU_SCREENS           8
 #define STABLE_BUF_SIZE        6
 #define STABLE_THR             0.02f
@@ -148,10 +148,13 @@ void setup() {
   app_wdt_init();
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(MENU_BTN_PIN, INPUT_PULLUP);
+  button_attach_interrupt(BUTTON_PIN, btnMain);
+  button_attach_interrupt(MENU_BTN_PIN, btnMenu);
 
 #if defined(ESP8266)
   Wire.begin(4, 5);
-  Wire.setClockStretchLimit(2500);  // DS3231 может тянуть до 2ms при конверсии температуры
+  Wire.setClock(100000);             // 100 кГц — стабильнее для длинных проводов
+  Wire.setClockStretchLimit(2500);   // DS3231 может тянуть до 2ms при конверсии температуры
 #else
   Wire.begin();
 #endif
@@ -183,11 +186,12 @@ void setup() {
   web_settings_init();
   ext_settings_init();
   tg_settings_init();
-  // prevWeight: всегда из отдельного EEPROM-слота (EEPROM_ADDR_PREV_WEIGHT).
-  // persist.lastWeight — это текущий вес на момент выключения, НЕ эталон дельты.
-  // Если использовать persist.lastWeight, то после включения с другим весом
-  // prevWeight = текущий вес → дельта = 0 (именно этот баг и был).
-  sys.prevWeight = load_prev_weight(sys.lastSavedWeight);
+  // prevWeight при загрузке = lastSavedWeight (последний стабильный вес предыдущей сессии).
+  // Это тот же источник что и у сплэш-экрана → сплэш и меню дельты показывают одно и то же.
+  // Если весы выключили при 5.5 кг, убрали 5 кг и включили при 0.5 — оба экрана
+  // покажут -5.0 кг. Stable save каждые 10 мин дополнительно синхронизирует
+  // ADDR_PREV_WEIGHT, так что load_prev_weight(fallback) тоже подтянется со временем.
+  sys.prevWeight = sys.lastSavedWeight;
 
   bat_init();
 
@@ -296,6 +300,18 @@ void loop() {
     }
     sys.currentTime = rtc_now();
     sys.rtcTempC = rtc_temperature();
+    // Обновляем datetimeStr сразу после RTC-чтения, чтобы log_append ниже
+    // использовал актуальное время (не из прошлой итерации цикла).
+    if (sys.currentTime.valid) {
+      sys.datetimeStr = rtc_format_datetime(sys.currentTime);
+    } else {
+      // RTC недоступен — используем uptime как fallback, чтобы запись в лог не блокировалась
+      unsigned long sec = millis() / 1000;
+      char tb[20];
+      snprintf(tb, sizeof(tb), "00.00.0000 %02lu:%02lu:%02lu",
+               (sec / 3600) % 24, (sec / 60) % 60, sec % 60);
+      sys.datetimeStr = tb;
+    }
     lastTempRead = now;
     sys.needsRedraw = true;
   }
@@ -346,10 +362,6 @@ void loop() {
 
   lcd_backlight_tick(lcd, get_lcd_bl_sec());
 
-  if (sys.currentTime.valid) {
-    sys.datetimeStr = rtc_format_datetime(sys.currentTime);
-  }
-
   wifi_ensure_connected();
   if (get_wifi_mode() == 0) {
     sys.wifiOk = (WiFi.softAPIP() != IPAddress(0,0,0,0));
@@ -397,8 +409,10 @@ void loop() {
   check_auto_sleep();
 
 #ifdef SLEEP_MODE_DEEP_SLEEP
-  log_append(sys.datetimeStr, sys.smoothedWeight,
-             sys.tempData.temperature, sys.tempData.humidity, sys.batVoltage, sys.batPercent);
+  {
+    log_append(sys.datetimeStr, sys.smoothedWeight,
+               sys.tempData.temperature, sys.tempData.humidity, sys.batVoltage, sys.batPercent);
+  }
   persist.lastWeight = sys.smoothedWeight;
   persist.lastTempC = sys.tempData.temperature;
   persist.wakeupCount++;
@@ -456,16 +470,34 @@ void handle_buttons() {
     menuPressCount++;
     if (menuPressCount == 1) {
       lastMenuPressTime = millis();
-    } else if (menuPressCount >= 2 && millis() - lastMenuPressTime < 500UL) {
-      undo_tare();
+    } else if (millis() - lastMenuPressTime < 500UL) {
+      if (sys.hasPrevOffset) {
+        undo_tare();
+      } else {
+        // Нет предыдущей тары — двойное нажатие = просто ещё один шаг меню
+        sys.menuScreen = (sys.menuScreen + 1) % MENU_SCREENS;
+        sys.needsRedraw = true;
+      }
       menuPressCount = 0;
       return;
+    } else {
+      // Второе нажатие, но окно 500мс истекло (loop блокировался process_weight)
+      // Прокручиваем меню за первое нажатие, текущее становится новым первым
+      sys.menuScreen = (sys.menuScreen + 1) % MENU_SCREENS;
+      sys.needsRedraw = true;
+      menuPressCount = 1;
+      lastMenuPressTime = millis();
     }
   }
   if (menuPressCount == 1 && millis() - lastMenuPressTime >= 500UL) {
     sys.menuScreen = (sys.menuScreen + 1) % MENU_SCREENS;
     sys.needsRedraw = true;
     menuPressCount = 0;
+  }
+  if (actMenu == LONG_PRESS) {
+    sys.menuScreen = 0;
+    menuPressCount = 0;
+    sys.needsRedraw = true;
   }
 }
 
@@ -549,12 +581,31 @@ void process_weight() {
 
   if (sys.weightStable && !stableSaved) {
     unsigned long nowMs = millis();
+    // При первой стабилизации в сессии:
+    // 1) prevWeight — если не установлен (первый запуск), ставим текущий
+    // 2) lastSavedWeight — сохраняем ВСЕГДА если вес изменился (не только при 0).
+    //    Это позволяет следующей сессии знать "что было", даже если весы включали
+    //    менее чем на 5 минут. prevWeight НЕ трогаем — он остаётся эталоном boot.
+    if (sys.smoothedWeight > 0.1f) {
+      if (sys.prevWeight < 0.1f) {
+        sys.prevWeight = sys.smoothedWeight;
+        save_prev_weight(sys.prevWeight);
+        sys.needsRedraw = true;
+      }
+      if (fabsf(sys.smoothedWeight - sys.lastSavedWeight) > WEIGHT_SAVE_THR) {
+        save_weight(sys.lastSavedWeight, sys.smoothedWeight);
+        lastSaveTime = nowMs;
+      }
+    }
     if (nowMs - lastStableSaveTime >= STABLE_SAVE_MIN_MS) {
       save_weight(sys.lastSavedWeight, sys.smoothedWeight);
+      // prevWeight НЕ обновляем — он меняется только вручную ("Сохранить" в веб)
+      // или при первом запуске (auto-init выше). lastSavedWeight уже сохранён
+      // при первой стабилизации сессии, поэтому следующий boot получит правильный
+      // эталон без сброса дельты каждые 10 минут.
       stableSaved = true;
       lastStableSaveTime = nowMs;
       lastSaveTime = nowMs;
-      Serial.println(F("[Stable] Weight locked"));
     } else {
       stableSaved = true;  // не писать в EEPROM, но флаг ставим
     }
@@ -575,8 +626,9 @@ void process_weight() {
     sys.needsRedraw = true;
   }
 
-  // Периодическая запись prevWeight в EEPROM (раз в 5 мин, только если изменился)
-  if (isnan(lastSavedPrevWeight) || fabsf(lastSavedPrevWeight - sys.prevWeight) > 0.001f) {
+  // Периодическая запись prevWeight в EEPROM (раз в 5 мин, только если изменился и валиден)
+  if (sys.prevWeight >= 0.1f &&
+      (isnan(lastSavedPrevWeight) || fabsf(lastSavedPrevWeight - sys.prevWeight) > 0.001f)) {
     if (now - lastPrevWeightSave >= 5UL * 60UL * 1000UL) {
       save_prev_weight(sys.prevWeight);
       lastSavedPrevWeight = sys.prevWeight;
@@ -674,7 +726,7 @@ void display_screen_temp() {
     snprintf(buf, sizeof(buf), "T:%4.1fC R:%4.1fC",
              sys.tempData.temperature, sys.rtcTempC);
   } else {
-    snprintf(buf, sizeof(buf), "T: --.- C       ");
+    snprintf(buf, sizeof(buf), "T: ---  R:%4.1fC", sys.rtcTempC);
   }
   lcd_print_padded(lcd, buf);
 
@@ -772,17 +824,29 @@ void display_screen_diag() {
 
     // --- DS18B20 ---
     lcd.setCursor(0, 1);
-    bool ds18ok = temp_available();
-    if (ds18ok) {
-      TempData td = temp_read();
-      lcd_print_padded(lcd, "DS18B20...  OK");
-      Serial.print(F("[DIAG] DS18B20: OK (temp="));
-      Serial.print(td.temperature, 1);
-      Serial.println(F(")"));
-      diagPass++;
-    } else {
+    if (!temp_available()) {
       lcd_print_padded(lcd, "DS18B20... FAIL");
-      Serial.println(F("[DIAG] DS18B20: FAIL"));
+      Serial.println(F("[DIAG] DS18B20: not found"));
+    } else {
+      // Первое чтение после init может быть невалидным (_firstRead).
+      // Делаем два попытки с паузой, чтобы получить реальный результат.
+      TempData td = temp_read();
+      if (!td.valid) {
+        delay(1100); app_wdt_reset();
+        td = temp_read();
+      }
+      if (td.valid) {
+        lcd_print_padded(lcd, "DS18B20...  OK");
+        Serial.print(F("[DIAG] DS18B20: OK (temp="));
+        Serial.print(td.temperature, 1);
+        Serial.println(F(")"));
+        diagPass++;
+      } else {
+        lcd_print_padded(lcd, "DS18B20..READ!");
+        Serial.print(F("[DIAG] DS18B20: found but read FAIL ("));
+        Serial.print(td.temperature, 1);
+        Serial.println(F(")"));
+      }
     }
     delay(1000);
     app_wdt_reset();
@@ -969,7 +1033,18 @@ void perform_taring() {
     return;
   }
 
-  scale.tare(30);  // 30 сэмплов — стабильный ноль
+  // Ручной tare с yield — вместо блокирующего scale.tare(30) который вызывал WDT reset
+  {
+    long sum = 0;
+    const int TARE_SAMPLES = 20;
+    for (int i = 0; i < TARE_SAMPLES; i++) {
+      scale.wait_ready_timeout(500);
+      sum += scale.read();
+      app_wdt_reset();
+      yield();
+    }
+    scale.set_offset(sum / TARE_SAMPLES);
+  }
   sys.offset = scale.get_offset();
   sys.smoothedWeight = 0.0f;
   sys.emaInitialized = false;
@@ -1075,7 +1150,18 @@ void perform_calibration() {
       return;
     }
   }
-  scale.tare(10);
+  // Ручной tare с yield — вместо блокирующего scale.tare(10)
+  {
+    long sum = 0;
+    const int TARE_SAMPLES = 10;
+    for (int i = 0; i < TARE_SAMPLES; i++) {
+      scale.wait_ready_timeout(500);
+      sum += scale.read();
+      app_wdt_reset();
+      yield();
+    }
+    scale.set_offset(sum / TARE_SAMPLES);
+  }
   long zeroOffset = scale.get_offset();
   Serial.print(F("[Calib] zero offset=")); Serial.println(zeroOffset);
 
@@ -1185,8 +1271,10 @@ void check_auto_sleep() {
   webServerStarted = false;
 
   // Записываем лог перед сном
-  log_append(sys.datetimeStr, sys.smoothedWeight,
-             sys.tempData.temperature, sys.tempData.humidity, sys.batVoltage, sys.batPercent);
+  {
+    log_append(sys.datetimeStr, sys.smoothedWeight,
+               sys.tempData.temperature, sys.tempData.humidity, sys.batVoltage, sys.batPercent);
+  }
 
   // Сохраняем данные
   save_weight(sys.lastSavedWeight, sys.smoothedWeight);

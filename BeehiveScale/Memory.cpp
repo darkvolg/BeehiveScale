@@ -120,7 +120,8 @@ void save_prev_weight(float w) {
 float load_prev_weight(float fallback) {
   float w = 0.0f;
   EEPROM.get(EEPROM_ADDR_PREV_WEIGHT, w);
-  if (isnan(w) || w <= 0.0f || w > 500.0f) return fallback;
+  // Отбраковываем мусор: улей не может весить < 0.1 кг
+  if (isnan(w) || isinf(w) || w < 0.1f || w > 500.0f) return fallback;
   return w;
 }
 

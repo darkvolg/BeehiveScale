@@ -5,7 +5,7 @@
 
 #define TEMP_SENSOR_DS18B20
 #if defined(ESP8266)
-#define TEMP_PIN        13
+#define TEMP_PIN        3   // GPIO3 (D9/RX) — D7/GPIO13 занят SPI MOSI для SD-карты
 #else
 #define TEMP_PIN        4
 #endif

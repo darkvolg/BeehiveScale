@@ -9,10 +9,9 @@
 #define LOG_FILE          "/log.csv"
 #define LOG_FILE_OLD      "/log_old.csv"
 
-// SD-карта отключена: SPI MOSI=GPIO13 конфликтует с DS18B20 (TEMP_PIN=13).
-// Раскомментируйте только если DS18B20 перенесён на другой пин.
-// #define USE_SD_CARD
-// #define SD_CS_PIN 15
+// DS18B20 перенесён на GPIO3 (D9/RX) — конфликт с SPI MOSI устранён.
+#define USE_SD_CARD
+#define SD_CS_PIN 15
 
 // ─── API ──────────────────────────────────────────────────────────────────
 bool   log_init();
@@ -38,5 +37,7 @@ struct DayStat {
 DayStat  log_day_stat(const String &todayDate);
 // Возвращает true если SD недоступна и используется LittleFS как резервный FS
 bool     log_using_fallback();
+// Возвращает true если файловая система (SD или LittleFS) смонтирована и доступна
+bool     log_fs_ok();
 
 #endif
