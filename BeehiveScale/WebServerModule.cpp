@@ -567,6 +567,19 @@ input[type=checkbox]{width:auto}
         <b style="color:var(--amber)">Подсветка LCD</b> — 0 = всегда включена; иначе — таймаут без нажатий.
       </div>
     </div>
+    <div class="card full">
+      <div class="card-title">💾 Бэкап и восстановление</div>
+      <div style="font-size:13px;color:var(--text3);margin-bottom:12px;line-height:1.7">
+        Скачайте полный бэкап всех настроек (калибровка, WiFi, Telegram, настройки).<br>
+        При каждом сохранении настроек бэкап автоматически копируется на SD-карту.
+      </div>
+      <div class="btn-row" style="gap:10px;flex-wrap:wrap">
+        <button class="btn btn-green" onclick="downloadBackup()">📥 Скачать бэкап</button>
+        <label class="btn btn-amber" style="cursor:pointer">📤 Загрузить бэкап<input type="file" id="backup-file" accept=".json" style="display:none" onchange="restoreBackup(this)"></label>
+        <button class="btn btn-blue" onclick="viewBackup()">👁 Просмотр</button>
+      </div>
+      <pre id="backup-preview" style="display:none;font-size:12px;color:var(--text2);line-height:1.5;margin-top:10px;max-height:200px;overflow:auto;background:var(--bg);padding:8px;border:1px solid var(--border)"></pre>
+    </div>
   </div>
 </div>
 
@@ -659,6 +672,8 @@ input[type=checkbox]{width:auto}
       <div class="api-item"><div class="api-method post">POST /api/tg/test</div><div class="api-desc">Тестовое сообщение в Telegram</div></div>
       <div class="api-item"><div class="api-method post">POST /api/calib/set</div><div class="api-desc">Установить calibFactor / offset</div></div>
       <div class="api-item"><div class="api-method post">POST /api/wifi/settings</div><div class="api-desc">Режим Wi-Fi + SSID/пароль роутера</div></div>
+      <div class="api-item"><div class="api-method get">GET /api/backup</div><div class="api-desc">Скачать полный бэкап настроек (JSON)</div></div>
+      <div class="api-item"><div class="api-method post">POST /api/backup/restore</div><div class="api-desc">Восстановить настройки из JSON бэкапа</div></div>
     </div>
   </div>
   <div class="card">
@@ -723,7 +738,7 @@ function toast(msg, err) {
 
 // ── API ───────────────────────────────────────────────────────────────
 function doApi(url) {
-  const method = (url.includes('/data')||url.includes('/log')||url.includes('/config')||url.includes('/daystat')) ? 'GET' : 'POST';
+  const method = (url.includes('/data')||url.includes('/log')||url.includes('/config')||url.includes('/daystat')||url.includes('/backup')) ? 'GET' : 'POST';
   return fetch(url,{method}).then(r=>r.json()).then(d=>{
     toast(d.msg||(d.ok?'OK':'Ошибка'), !d.ok); return d;
   }).catch(()=>toast('Нет связи',true));
@@ -1085,6 +1100,32 @@ function dlBlob(blob,name){const a=document.createElement('a');a.href=URL.create
 function dlByDate(){const d=document.getElementById('log-date').value;if(!d){toast('Выберите дату',true);return;}window.open('/api/log?date='+d,'_blank');}
 function dlSdDate(){const d=document.getElementById('exp-date-sd').value;if(!d){toast('Выберите дату',true);return;}window.open('/api/log?date='+d,'_blank');}
 
+// ── Backup ─────────────────────────────────────────────────────────────
+function downloadBackup(){window.open('/api/backup','_blank');}
+function viewBackup(){
+  fetch('/api/backup').then(r=>r.json()).then(d=>{
+    const el=document.getElementById('backup-preview');
+    el.textContent=JSON.stringify(d,null,2);
+    el.style.display=el.style.display==='none'?'block':'none';
+  }).catch(()=>toast('Нет связи',true));
+}
+function restoreBackup(inp){
+  const file=inp.files[0];
+  if(!file){return;}
+  if(!file.name.endsWith('.json')){toast('Нужен .json файл',true);inp.value='';return;}
+  const reader=new FileReader();
+  reader.onload=function(e){
+    let json;
+    try{json=JSON.parse(e.target.result);}catch(ex){toast('Ошибка: не JSON',true);inp.value='';return;}
+    if(json._type!=='BeehiveScale_backup'){toast('Неверный формат бэкапа',true);inp.value='';return;}
+    if(!confirm('Восстановить ВСЕ настройки из бэкапа?\n(калибровка, WiFi, Telegram, параметры)\n\nТекущие настройки будут перезаписаны!')){inp.value='';return;}
+    fetch('/api/backup/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(json)})
+      .then(r=>r.json()).then(d=>{toast(d.msg||'OK',!d.ok);if(d.ok)loadConfig();}).catch(()=>toast('Нет связи',true));
+  };
+  reader.readAsText(file);
+  inp.value='';
+}
+
 // ── Load config ───────────────────────────────────────────────────────
 function loadConfig(){
   fetch('/api/config').then(r=>r.json()).then(d=>{
@@ -1395,6 +1436,9 @@ static void _handleSave() {
   else _sendJson(false, "Нет обработчика");
 }
 
+// Forward declaration — используется в авто-бэкапе при сохранении настроек
+static String _buildBackupJson();
+
 static void _handleSettings() {
   if (!_auth()) return;
   _activity();
@@ -1459,6 +1503,9 @@ static void _handleSettings() {
     } else { _sendJson(false, "apPass: 8–23 символа"); return; }
   }
 
+  // Авто-бэкап на SD при изменении настроек
+  log_save_backup(_buildBackupJson());
+
   _sendJson(true, "Сохранено");
 }
 
@@ -1514,6 +1561,7 @@ static void _handleTgSettings() {
     const char* c = doc["chatId"].as<const char*>();
     if (c && strlen(c) < 16) set_tg_chatid(c);
   }
+  log_save_backup(_buildBackupJson());
   _sendJson(true, "Telegram настройки сохранены");
 }
 
@@ -1546,7 +1594,7 @@ static void _handleCalibSet() {
     _wa.doSetCalibOffset(ofs);
     changed = true;
   }
-  if (changed) _sendJson(true, "Калибровка обновлена");
+  if (changed) { log_save_backup(_buildBackupJson()); _sendJson(true, "Калибровка обновлена"); }
   else _sendJson(false, "Нет данных для обновления");
 }
 
@@ -1569,6 +1617,7 @@ static void _handleWifiSettings() {
     if (pass) set_wifi_sta_pass(pass);
   }
   set_wifi_mode(mode);
+  log_save_backup(_buildBackupJson());
   _sendJson(true, "WiFi настройки сохранены, перезагрузка...");
   _srv.client().flush();
   delay(300);
@@ -1690,6 +1739,142 @@ static void _handleLogJson() {
   _srv.send(200, "application/json", json);
 }
 
+// ─── /api/backup  GET — полный бэкап настроек EEPROM ──────────────────────
+static String _buildBackupJson() {
+  StaticJsonDocument<768> doc;
+  doc["_type"] = "BeehiveScale_backup";
+  doc["_ver"]  = "4.1";
+
+  // Калибровка
+  doc["calibFactor"]  = *_wd.calibFactor;
+  doc["offset"]       = *_wd.offset;
+  doc["weight"]       = *_wd.lastSavedWeight;
+  doc["prevWeight"]   = *_wd.prevWeight;
+  doc["prevOffset"]   = load_prev_offset();
+
+  // Настройки
+  doc["alertDelta"]   = web_get_alert_delta();
+  doc["calibWeight"]  = web_get_calib_weight();
+  doc["emaAlpha"]     = web_get_ema_alpha();
+  doc["sleepSec"]     = (unsigned long)get_sleep_sec();
+  doc["lcdBlSec"]     = (unsigned int)get_lcd_bl_sec();
+
+  // AP пароль
+  { char ap[24]; get_ap_pass(ap, sizeof(ap)); doc["apPass"] = ap; }
+
+  // Telegram
+  { char tok[50], cid[16];
+    get_tg_token(tok, sizeof(tok));
+    get_tg_chatid(cid, sizeof(cid));
+    doc["tgToken"]  = tok;
+    doc["tgChatId"] = cid;
+  }
+
+  // WiFi
+  doc["wifiMode"] = (int)get_wifi_mode();
+  { char ss[33], wp[33];
+    get_wifi_ssid(ss, sizeof(ss));
+    get_wifi_sta_pass(wp, sizeof(wp));
+    doc["wifiSsid"] = ss;
+    doc["wifiPass"] = wp;
+  }
+
+  String out;
+  serializeJson(doc, out);
+  return out;
+}
+
+static void _handleBackup() {
+  if (!_auth()) return;
+  _activity();
+  String json = _buildBackupJson();
+  _srv.sendHeader("Content-Disposition", "attachment; filename=\"beehive_backup.json\"");
+  _srv.send(200, "application/json", json);
+
+  // Авто-сохранение на SD/LittleFS
+  log_save_backup(json);
+}
+
+// ─── /api/backup/restore  POST — восстановление из JSON бэкапа ───────────
+static void _handleBackupRestore() {
+  if (!_auth()) return;
+  _activity();
+  if (_srv.method() != HTTP_POST) { _sendJson(false, "Только POST"); return; }
+
+  StaticJsonDocument<768> doc;
+  DeserializationError err = deserializeJson(doc, _srv.arg("plain"));
+  if (err) { _sendJson(false, "Ошибка JSON"); return; }
+
+  // Проверяем маркер бэкапа
+  const char* type = doc["_type"] | "";
+  if (strcmp(type, "BeehiveScale_backup") != 0) {
+    _sendJson(false, "Неверный формат бэкапа");
+    return;
+  }
+
+  int restored = 0;
+
+  // Калибровка
+  if (doc.containsKey("calibFactor")) {
+    float cf = doc["calibFactor"].as<float>();
+    if (cf >= 100.0f && cf <= 100000.0f) {
+      save_calibration(cf);
+      if (_wa.doSetCalibFactor) _wa.doSetCalibFactor(cf);
+      restored++;
+    }
+  }
+  if (doc.containsKey("offset")) {
+    long ofs = doc["offset"].as<long>();
+    save_offset(ofs);
+    if (_wa.doSetCalibOffset) _wa.doSetCalibOffset(ofs);
+    restored++;
+  }
+  if (doc.containsKey("weight")) {
+    float w = doc["weight"].as<float>();
+    if (w >= 0.0f && w <= 500.0f) {
+      save_weight(*_wd.lastSavedWeight, w);
+      restored++;
+    }
+  }
+  if (doc.containsKey("prevWeight")) {
+    float pw = doc["prevWeight"].as<float>();
+    if (pw >= 0.0f && pw <= 500.0f) {
+      save_prev_weight(pw);
+      *_wd.prevWeight = pw;
+      restored++;
+    }
+  }
+  if (doc.containsKey("prevOffset")) {
+    long po = doc["prevOffset"].as<long>();
+    save_prev_offset(po);
+    restored++;
+  }
+
+  // Настройки
+  float ad = web_get_alert_delta(), cw = web_get_calib_weight(), ea = web_get_ema_alpha();
+  if (doc.containsKey("alertDelta"))  { float v = doc["alertDelta"].as<float>();  if (v >= 0.1f && v <= 10.0f) { ad = v; restored++; } }
+  if (doc.containsKey("calibWeight")) { float v = doc["calibWeight"].as<float>(); if (v >= 100.0f && v <= 5000.0f) { cw = v; restored++; } }
+  if (doc.containsKey("emaAlpha"))    { float v = doc["emaAlpha"].as<float>();    if (v >= 0.05f && v <= 0.9f) { ea = v; restored++; } }
+  save_web_settings(ad, cw, ea);
+
+  if (doc.containsKey("sleepSec")) { uint32_t v = doc["sleepSec"].as<uint32_t>(); if (v >= 30 && v <= 86400) { set_sleep_sec(v); restored++; } }
+  if (doc.containsKey("lcdBlSec")) { uint16_t v = doc["lcdBlSec"].as<uint16_t>(); if (v <= 3600) { set_lcd_bl_sec(v); restored++; } }
+  if (doc.containsKey("apPass"))   { const char* p = doc["apPass"] | ""; if (strlen(p) >= 8 && strlen(p) <= 23) { set_ap_pass(p); restored++; } }
+
+  // Telegram
+  if (doc.containsKey("tgToken"))  { const char* t = doc["tgToken"] | "";  if (strlen(t) > 0) { set_tg_token(t); restored++; } }
+  if (doc.containsKey("tgChatId")) { const char* c = doc["tgChatId"] | ""; if (strlen(c) > 0) { set_tg_chatid(c); restored++; } }
+
+  // WiFi
+  if (doc.containsKey("wifiMode")) { uint8_t m = doc["wifiMode"].as<uint8_t>(); if (m <= 1) { set_wifi_mode(m); restored++; } }
+  if (doc.containsKey("wifiSsid")) { const char* s = doc["wifiSsid"] | ""; if (strlen(s) > 0) { set_wifi_ssid(s); restored++; } }
+  if (doc.containsKey("wifiPass")) { const char* p = doc["wifiPass"] | ""; if (strlen(p) > 0) { set_wifi_sta_pass(p); restored++; } }
+
+  char msg[48];
+  snprintf(msg, sizeof(msg), "Восстановлено %d параметров", restored);
+  _sendJson(true, msg);
+}
+
 // ─── PUBLIC API ───────────────────────────────────────────────────────────
 void webserver_init(WebData &data, WebActions &actions) {
   _wd = data;
@@ -1713,6 +1898,8 @@ void webserver_init(WebData &data, WebActions &actions) {
   _srv.on("/wifi",              HTTP_GET,  _handleWifi);
   _srv.on("/api/wifi/settings", HTTP_POST, _handleWifiSettings);
   _srv.on("/api/config",        HTTP_GET,  _handleConfig);
+  _srv.on("/api/backup",          HTTP_GET,  _handleBackup);
+  _srv.on("/api/backup/restore",  HTTP_POST, _handleBackupRestore);
   _srv.onNotFound(_handleNotFound);
 
   _srv.begin();

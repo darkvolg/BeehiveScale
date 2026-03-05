@@ -40,4 +40,11 @@ bool     log_using_fallback();
 // Возвращает true если файловая система (SD или LittleFS) смонтирована и доступна
 bool     log_fs_ok();
 
+// ─── Бэкап настроек на SD/LittleFS ─────────────────────────────────────
+#define BACKUP_FILE "/backup.json"
+// Сохраняет JSON-бэкап всех EEPROM-настроек на SD/LittleFS
+bool     log_save_backup(const String &json);
+// Читает JSON-бэкап из файла; пустая строка при ошибке
+String   log_read_backup();
+
 #endif

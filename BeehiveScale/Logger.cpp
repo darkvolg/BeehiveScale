@@ -252,13 +252,30 @@ void log_append(const String &datetime, float weight, float tempC,
     return;
   }
 
-  // Ротация: если файл > LOG_MAX_SIZE, переименовать и начать новый
+  // Ротация: если файл > LOG_MAX_SIZE — архивировать с датой
   if (log_size() >= LOG_MAX_SIZE) {
-    if (_fs_exists(LOG_FILE_OLD)) _fs_remove(LOG_FILE_OLD);
-    _fs_rename(LOG_FILE, LOG_FILE_OLD);
+    // Формируем имя архива: /log_YYMMDD_HHMM.csv
+    // datetime передаётся в формате "DD.MM.YYYY HH:MM:SS"
+    char arcName[32];
+    if (datetime.length() >= 16) {
+      // "DD.MM.YYYY HH:MM" → "YYMMDD_HHMM"
+      snprintf(arcName, sizeof(arcName), "/log_%c%c%c%c%c%c_%c%c%c%c.csv",
+        datetime[8], datetime[9],  // YY (последние 2 цифры года)
+        datetime[3], datetime[4],  // MM
+        datetime[0], datetime[1],  // DD
+        datetime[11], datetime[12], // HH
+        datetime[14], datetime[15]  // MM
+      );
+    } else {
+      // Фоллбэк — перезаписать log_old.csv
+      strncpy(arcName, LOG_FILE_OLD, sizeof(arcName));
+    }
+    if (_fs_exists(arcName)) _fs_remove(arcName);
+    _fs_rename(LOG_FILE, arcName);
     File fn = _fs_open_write(LOG_FILE);
     if (fn) { fn.print(CSV_HEADER); fn.close(); }
-    Serial.println(F("[Log] Rotated"));
+    Serial.print(F("[Log] Rotated → "));
+    Serial.println(arcName);
   }
 
   File f = _fs_open_append(LOG_FILE);
@@ -558,4 +575,25 @@ String log_to_json(int maxRows) {
   f.close();
   out += ']';
   return out;
+}
+
+// ─── Бэкап/восстановление настроек на SD/LittleFS ─────────────────────
+
+bool log_save_backup(const String &json) {
+  if (!_fs_ok()) return false;
+  File f = _fs_open_write(BACKUP_FILE);
+  if (!f) return false;
+  f.print(json);
+  f.close();
+  Serial.println(F("[Log] Backup saved to SD/FS"));
+  return true;
+}
+
+String log_read_backup() {
+  if (!_fs_ok() || !_fs_exists(BACKUP_FILE)) return "";
+  File f = _fs_open_read(BACKUP_FILE);
+  if (!f) return "";
+  String json = f.readString();
+  f.close();
+  return json;
 }
