@@ -51,8 +51,16 @@ TempData temp_read() {
     return td;  // valid=false, пропуск первого чтения
   }
 
-  float t = _ds.getTempCByIndex(0);
+  // Retry до 3 раз: на ESP8266 WiFi-прерывания могут нарушить OneWire-тайминг
+  // и вызвать CRC-ошибку (DEVICE_DISCONNECTED_C). Повтор через паузу помогает.
+  float t = DEVICE_DISCONNECTED_C;
+  for (int attempt = 0; attempt < 3; attempt++) {
+    t = _ds.getTempCByIndex(0);
+    if (t != DEVICE_DISCONNECTED_C) break;
+    if (attempt < 2) { unsigned long _t=millis(); while(millis()-_t<20){yield();} }
+  }
   _ds.requestTemperatures();
+
   if (t == DEVICE_DISCONNECTED_C || t < -55.0f || t > 125.0f) {
     td.valid = false;
     td.temperature = TEMP_ERROR_VALUE;

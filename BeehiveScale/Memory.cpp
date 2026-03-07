@@ -316,3 +316,97 @@ void set_wifi_sta_pass(const char *pass) {
   _wifiStaPass[sizeof(_wifiStaPass) - 1] = '\0';
   _wifi_save();
 }
+
+// ─── Расписание замеров ────────────────────────────────────────────────────
+#define MAX_SCHED_TIMES 8
+static uint16_t _schedTimes[MAX_SCHED_TIMES] = {};
+static uint8_t  _schedCount = 0;
+static bool     _schedLoaded = false;
+
+void sched_settings_init() {
+  if (_schedLoaded) return;
+  byte magic;
+  EEPROM.get(EEPROM_ADDR_SCHED_MAGIC, magic);
+  if (magic == EEPROM_MAGIC_SCHED_VALUE) {
+    EEPROM.get(EEPROM_ADDR_SCHED_COUNT, _schedCount);
+    if (_schedCount > MAX_SCHED_TIMES) _schedCount = 0;
+    for (uint8_t i = 0; i < _schedCount; i++) {
+      EEPROM.get(EEPROM_ADDR_SCHED_TIMES + i * 2, _schedTimes[i]);
+    }
+  } else {
+    _schedCount = 0;
+  }
+  _schedLoaded = true;
+}
+
+void get_sched_times(uint16_t *times, uint8_t &count) {
+  if (!_schedLoaded) sched_settings_init();
+  count = _schedCount;
+  for (uint8_t i = 0; i < _schedCount; i++) times[i] = _schedTimes[i];
+}
+
+void set_sched_times(const uint16_t *times, uint8_t count) {
+  if (count > MAX_SCHED_TIMES) count = MAX_SCHED_TIMES;
+  _schedCount = count;
+  for (uint8_t i = 0; i < count; i++) _schedTimes[i] = times[i];
+  byte magic = EEPROM_MAGIC_SCHED_VALUE;
+  EEPROM.put(EEPROM_ADDR_SCHED_MAGIC, magic);
+  EEPROM.put(EEPROM_ADDR_SCHED_COUNT, _schedCount);
+  for (uint8_t i = 0; i < count; i++) {
+    EEPROM.put(EEPROM_ADDR_SCHED_TIMES + i * 2, times[i]);
+  }
+  EEPROM.commit();
+  _schedLoaded = true;
+}
+
+uint32_t sched_next_sec(uint8_t hour, uint8_t minute) {
+  if (!_schedLoaded) sched_settings_init();
+  if (_schedCount == 0) return get_sleep_sec();
+  uint16_t now_min = (uint16_t)hour * 60 + minute;
+  uint16_t best = 0;
+  bool found = false;
+  // Ближайшее время сегодня позже текущего
+  for (uint8_t i = 0; i < _schedCount; i++) {
+    if (_schedTimes[i] > now_min && (!found || _schedTimes[i] < best)) {
+      best = _schedTimes[i]; found = true;
+    }
+  }
+  if (found) return (uint32_t)(best - now_min) * 60;
+  // Нет следующего сегодня — самое раннее завтра
+  for (uint8_t i = 0; i < _schedCount; i++) {
+    if (!found || _schedTimes[i] < best) { best = _schedTimes[i]; found = true; }
+  }
+  return (uint32_t)(1440 - now_min + best) * 60;
+}
+
+// ─── Интервал TG-отчётов ──────────────────────────────────────────────────
+static uint32_t _tgReportIntervalMin = 360;  // 6 часов по умолчанию
+static bool     _tgRptLoaded = false;
+
+void tg_report_settings_init() {
+  byte magic;
+  EEPROM.get(EEPROM_ADDR_TG_REPORT_MAGIC, magic);
+  if (magic == EEPROM_MAGIC_TG_RPT_VALUE) {
+    EEPROM.get(EEPROM_ADDR_TG_REPORT_INT, _tgReportIntervalMin);
+    // Валидация: 0=откл, или 60..10080 мин. Мусор из EEPROM → дефолт.
+    if (_tgReportIntervalMin != 0 && (_tgReportIntervalMin < 60 || _tgReportIntervalMin > 10080)) {
+      _tgReportIntervalMin = 360;
+    }
+  }
+  // иначе остаётся 360 мин (6ч) по умолчанию
+  _tgRptLoaded = true;
+}
+
+uint32_t get_tg_report_interval_min() {
+  if (!_tgRptLoaded) tg_report_settings_init();
+  return _tgReportIntervalMin;
+}
+
+void set_tg_report_interval_min(uint32_t minutes) {
+  _tgReportIntervalMin = minutes;
+  byte magic = EEPROM_MAGIC_TG_RPT_VALUE;
+  EEPROM.put(EEPROM_ADDR_TG_REPORT_MAGIC, magic);
+  EEPROM.put(EEPROM_ADDR_TG_REPORT_INT, _tgReportIntervalMin);
+  EEPROM.commit();
+  _tgRptLoaded = true;
+}

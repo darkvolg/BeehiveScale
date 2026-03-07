@@ -27,12 +27,20 @@
 #define EEPROM_MAGIC_TG_VALUE    0xB1
 #define EEPROM_ADDR_TG_TOKEN     66   // char[50] — Telegram bot token
 #define EEPROM_ADDR_TG_CHATID    116  // char[16] — Telegram chat_id
-// WiFi STA настройки (addr 133-199)
+// WiFi STA настройки (addr 133-200)
 #define EEPROM_ADDR_WIFI_MAGIC   133  // 1 байт magic
 #define EEPROM_MAGIC_WIFI_VALUE  0xC1
 #define EEPROM_ADDR_WIFI_MODE    134  // 1 байт: 0=AP, 1=STA
 #define EEPROM_ADDR_WIFI_SSID    135  // char[33] — SSID роутера
 #define EEPROM_ADDR_WIFI_PASS    168  // char[33] — Пароль роутера
+// Расписание замеров (addr 201-218)
+#define EEPROM_ADDR_SCHED_MAGIC  201  // 1 байт magic
+#define EEPROM_MAGIC_SCHED_VALUE 0xD1
+#define EEPROM_ADDR_SCHED_COUNT  202  // 1 байт (0..8)
+#define EEPROM_ADDR_SCHED_TIMES  203  // 8 × uint16_t = 16 байт (минуты от полуночи)
+#define EEPROM_ADDR_TG_REPORT_INT 219  // uint32_t — интервал TG-отчётов (минуты, 0=выкл)
+#define EEPROM_MAGIC_TG_RPT_VALUE 0xE1
+#define EEPROM_ADDR_TG_REPORT_MAGIC 223 // 1 байт magic
 #define EEPROM_SIZE              256  // запас для будущих настроек
 
 // Веб-настройки (alertDelta, calibWeight, emaAlpha)
@@ -73,6 +81,17 @@ void     get_wifi_ssid(char *buf, size_t maxLen);
 void     set_wifi_ssid(const char *ssid);
 void     get_wifi_sta_pass(char *buf, size_t maxLen);
 void     set_wifi_sta_pass(const char *pass);
+
+// Расписание замеров (до 8 суточных времён)
+void     sched_settings_init();
+void     get_sched_times(uint16_t *times, uint8_t &count);
+void     set_sched_times(const uint16_t *times, uint8_t count);
+uint32_t sched_next_sec(uint8_t hour, uint8_t minute);  // секунд до следующего времени по расписанию
+
+// TG интервал отчётов (0 = отключить периодические отчёты)
+void     tg_report_settings_init();
+uint32_t get_tg_report_interval_min();
+void     set_tg_report_interval_min(uint32_t minutes);
 
 // Предыдущий offset (для отмены тары)
 void save_prev_offset(long prevOffset);

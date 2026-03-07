@@ -185,6 +185,8 @@ void setup() {
   sys.prevOffset = load_prev_offset();
   web_settings_init();
   ext_settings_init();
+  sched_settings_init();
+  tg_report_settings_init();
   tg_settings_init();
   // prevWeight при загрузке = lastSavedWeight (последний стабильный вес предыдущей сессии).
   // Это тот же источник что и у сплэш-экрана → сплэш и меню дельты показывают одно и то же.
@@ -354,11 +356,41 @@ void loop() {
     }
   }
 
-  if (now - lastLogWrite >= LOG_INTERVAL_MS) {
-    log_append(sys.datetimeStr, sys.smoothedWeight,
-               sys.tempData.temperature, sys.tempData.humidity, sys.batVoltage, sys.batPercent);
-    lastLogWrite = now;
+  // В deep sleep режиме лог пишется один раз перед сном (ниже), здесь пропускаем
+#ifndef SLEEP_MODE_DEEP_SLEEP
+  {
+    static uint16_t _lastSchedLogMin = 0xFFFF;
+    static bool _bootLogDone = false;
+    uint16_t stimes[8]; uint8_t scnt;
+    get_sched_times(stimes, scnt);
+    bool schedLog = false;
+    if (sys.currentTime.valid && scnt > 0) {
+      uint16_t cur_min = (uint16_t)sys.currentTime.hour * 60 + sys.currentTime.minute;
+      for (uint8_t i = 0; i < scnt; i++) {
+        if (stimes[i] == cur_min && _lastSchedLogMin != cur_min) {
+          _lastSchedLogMin = cur_min; schedLog = true; break;
+        }
+      }
+    }
+    // Запись при каждом включении (однократно, как только датчик готов)
+    bool bootLog = false;
+    if (!_bootLogDone && sys.sensorReady && sys.currentTime.valid) {
+      _bootLogDone = true;
+      if (!schedLog) {  // не дублировать если это уже расписанное время
+        bootLog = true;
+        // предотвратить повторное срабатывание schedLog в эту же минуту
+        if (sys.currentTime.valid)
+          _lastSchedLogMin = (uint16_t)sys.currentTime.hour * 60 + sys.currentTime.minute;
+      }
+    }
+    bool useInterval = (scnt == 0);  // интервал только если расписание не задано
+    if (schedLog || bootLog || (useInterval && now - lastLogWrite >= LOG_INTERVAL_MS)) {
+      log_append(sys.datetimeStr, sys.smoothedWeight,
+                 sys.tempData.temperature, sys.tempData.humidity, sys.batVoltage, sys.batPercent);
+      lastLogWrite = now;
+    }
   }
+#endif
 
   lcd_backlight_tick(lcd, get_lcd_bl_sec());
 
@@ -394,12 +426,20 @@ void loop() {
       lastTsUpload = now;
     }
 
-    if (now - lastTgReport >= TG_REPORT_INTERVAL) {
+    uint32_t tgRptMs = get_tg_report_interval_min() * 60000UL;
+#ifdef SLEEP_MODE_DEEP_SLEEP
+    // В deep sleep millis() сбрасывается при каждом пробуждении —
+    // отправляем TG на каждом пробуждении (расписание и есть интервал отчётов)
+    bool doTgReport = (tgRptMs > 0);
+#else
+    bool doTgReport = (tgRptMs > 0 && now - lastTgReport >= tgRptMs);
+#endif
+    if (doTgReport) {
       TimeStamp ts = rtc_now();
       String dt = rtc_format_datetime(ts);
       if (!tg_send_report(sys.smoothedWeight, sys.tempData.temperature,
                           sys.tempData.humidity, dt)) {
-        queue_add(sys.smoothedWeight, sys.tempData.temperature, 
+        queue_add(sys.smoothedWeight, sys.tempData.temperature,
                   sys.tempData.humidity, rtc_temperature(), dt);
       }
       lastTgReport = now;
@@ -420,7 +460,10 @@ void loop() {
 #if defined(ESP32)
   esp_task_wdt_delete(NULL);
 #endif
-  sleep_enter(get_sleep_sec());
+  uint32_t sleepDur = sys.currentTime.valid
+    ? sched_next_sec(sys.currentTime.hour, sys.currentTime.minute)
+    : get_sleep_sec();
+  sleep_enter(sleepDur);
 #endif
 }
 
@@ -431,7 +474,9 @@ void handle_buttons() {
   ButtonAction actMain = read_button(BUTTON_PIN, btnMain);
   ButtonAction actMenu = read_button(MENU_BTN_PIN, btnMenu);
 
-  if (actMain != NO_ACTION || actMenu != NO_ACTION) {
+  // Подсветка: реагировать на физическое нажатие сразу, не ждать debounce/release
+  bool anyPressed = (digitalRead(BUTTON_PIN) == LOW || digitalRead(MENU_BTN_PIN) == LOW);
+  if (anyPressed || actMain != NO_ACTION || actMenu != NO_ACTION) {
     lastActivityTime = millis();
     lcd_backlight_activity(lcd);
   }
@@ -637,23 +682,21 @@ void process_weight() {
   }
 
   if (get_wifi_mode() == 1) {
+    static unsigned long lastAlertTime = 0;
+    static const unsigned long ALERT_COOLDOWN_MS = 1800000UL;  // 30 мин между алертами
     float alertDelta = web_get_alert_delta();
-    // Дельта от эталона — для отображения, не меняется автоматически.
-    // Дельта от последнего алерта — для повторных срабатываний.
     float deltaFromRef   = fabsf(sys.smoothedWeight - sys.prevWeight);
     float deltaFromAlert = fabsf(sys.smoothedWeight - persist.lastAlertWeight);
-    // Алерт срабатывает если:
-    //  - первый раз: изменение от эталона >= порога
-    //  - повторно:   изменение от предыдущего алерта >= порога (накопилось ещё)
     bool firstAlert  = !persist.alertSent && deltaFromRef   >= alertDelta;
     bool repeatAlert =  persist.alertSent && deltaFromAlert >= alertDelta;
-    if ((firstAlert || repeatAlert) && sys.wifiOk) {
+    bool cooldownOk  = (now - lastAlertTime >= ALERT_COOLDOWN_MS);
+    if ((firstAlert || repeatAlert) && sys.wifiOk && cooldownOk) {
       TimeStamp ts = rtc_now();
       tg_send_alert(sys.smoothedWeight, sys.tempData.temperature,
                     rtc_format_datetime(ts));
       persist.alertSent    = true;
-      persist.lastAlertWeight = sys.smoothedWeight;  // сдвигаем точку отсчёта повторных алертов
-      // prevWeight НЕ трогаем — дельта на экране/веб остаётся относительно эталона
+      persist.lastAlertWeight = sys.smoothedWeight;
+      lastAlertTime = now;
     }
     // Сбрасываем флаг когда вес вернулся близко к эталону
     if (deltaFromRef < alertDelta * 0.5f) {
@@ -664,7 +707,11 @@ void process_weight() {
 }
 
 void process_temperature() {
-  sys.tempData = temp_read();
+  TempData td = temp_read();
+  if (td.valid) {
+    sys.tempData = td;  // обновляем только при успешном чтении
+  }
+  // При ошибке CRC — сохраняем предыдущее валидное значение
 }
 
 void update_interface() {
@@ -1288,7 +1335,12 @@ void check_auto_sleep() {
 #if defined(ESP32)
   esp_task_wdt_delete(NULL);
 #endif
-  sleep_enter(0);  // 0 = без таймера, только по кнопке
+  { uint32_t sleepDur = sys.currentTime.valid
+      ? sched_next_sec(sys.currentTime.hour, sys.currentTime.minute)
+      : get_sleep_sec();
+    if (sleepDur == 0) sleepDur = get_sleep_sec();
+    sleep_enter(sleepDur);
+  }
 }
 
 void show_splash_screen() {

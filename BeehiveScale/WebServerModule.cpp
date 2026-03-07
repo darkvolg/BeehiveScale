@@ -318,37 +318,15 @@ input[type=checkbox]{width:auto}
         📈 Мини-график
         <span onclick="nav('chart')">[открыть полный →]</span>
       </div>
-      <div class="chart-container" style="height:90px">
-        <svg id="mini-svg" class="chart-svg" viewBox="0 0 600 90" preserveAspectRatio="none">
-          <text x="300" y="50" text-anchor="middle" fill="#506040" font-size="10">Загрузка...</text>
+      <div class="chart-container" style="height:350px">
+        <div class="tip" id="tip-mini"></div>
+        <svg id="mini-svg" class="chart-svg" viewBox="0 0 900 350" preserveAspectRatio="xMidYMid meet"
+             onmousemove="onTip(event,'mini')" onmouseleave="hideTip('mini')">
+          <text x="450" y="130" text-anchor="middle" fill="#506040" font-size="12">Загрузка...</text>
         </svg>
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-title">🔧 Действия</div>
-      <div class="btn-row">
-        <button class="btn btn-amber" onclick="doApi('/api/tare')">⚖ Тарировка</button>
-        <button class="btn btn-green" onclick="doApi('/api/save')">💾 Сохранить эталон</button>
-        <button class="btn btn-blue"  onclick="doApi('/api/ntp')">🕐 NTP Время</button>
-        <button class="btn btn-blue"  onclick="doApi('/api/tg/test')">✉ Тест TG</button>
-        <button class="btn btn-red"   onclick="if(confirm('Очистить лог?'))doApi('/api/log/clear')">🗑 Очистить лог</button>
-        <button class="btn btn-red"   onclick="if(confirm('Перезагрузить ESP?'))doApi('/api/reboot')">↺ Перезагрузить</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-title">⬇ Быстрый экспорт</div>
-      <div class="val-sub" style="margin-bottom:10px">Лог: <b id="sd-log-size">--</b> &nbsp;|&nbsp; Своб: <b id="sd-free">--</b></div>
-      <div class="form-row">
-        <label>Скачать за дату</label>
-        <input type="date" id="log-date">
-      </div>
-      <div class="btn-row">
-        <button class="btn btn-green" onclick="window.open('/api/log','_blank')">📥 Весь CSV</button>
-        <button class="btn btn-amber" onclick="dlByDate()">📥 За дату</button>
-      </div>
-    </div>
 
   </div>
 </div>
@@ -456,6 +434,7 @@ input[type=checkbox]{width:auto}
       <button class="btn btn-green" onclick="exportExcel()">📊 Скачать Excel (.xlsx)</button>
       <button class="btn btn-amber" onclick="exportCsv()">📄 Скачать CSV</button>
       <button class="btn btn-blue"  onclick="previewExport()">👁 Предпросмотр</button>
+      <button class="btn btn-red"   onclick="if(confirm('Очистить лог?'))doApi('/api/log/clear')">🗑 Очистить лог</button>
     </div>
 
     <div id="preview-wrap" style="display:none">
@@ -498,6 +477,7 @@ input[type=checkbox]{width:auto}
       </div>
       <div class="btn-row">
         <button class="btn btn-green" onclick="saveWifi()">💾 Сохранить и перезагрузить</button>
+        <button class="btn btn-blue"  onclick="doApi('/api/ntp')">🕐 NTP Время</button>
       </div>
       <div style="font-size:13px;color:var(--text3);margin-top:10px;line-height:1.7">
         <b style="color:var(--amber)">AP режим:</b> прямое подключение к устройству → 192.168.4.1<br>
@@ -550,11 +530,13 @@ input[type=checkbox]{width:auto}
       <div class="form-row"><label>Порог тревоги Telegram (кг, 0.1–10)</label><input type="number" id="cfg-alert" step="0.1" min="0.1" max="10" placeholder="0.5"></div>
       <div class="form-row"><label>Эталонный груз калибровки (г, 100–5000)</label><input type="number" id="cfg-calib" step="100" min="100" max="5000" placeholder="1000"></div>
       <div class="form-row"><label>EMA сглаживание α (0.05–0.9)</label><input type="number" id="cfg-ema" step="0.05" min="0.05" max="0.9" placeholder="0.1"></div>
-      <div class="form-row"><label>Deep Sleep интервал (сек, 30–86400)</label><input type="number" id="cfg-sleep" step="60" min="30" max="86400" placeholder="180"></div>
+      <div class="form-row"><label>Deep Sleep интервал (сек, 30–86400)</label><input type="number" id="cfg-sleep" step="60" min="30" max="86400" placeholder="900"></div>
+      <div class="form-row"><label>Расписание замеров (HH:MM через пробел, до 8 времён)</label><input type="text" id="cfg-sched" placeholder="08:00 14:00 20:00" maxlength="60"></div>
       <div class="form-row"><label>Таймаут подсветки LCD (сек, 0=всегда)</label><input type="number" id="cfg-bl" step="10" min="0" max="3600" placeholder="30"></div>
       <div class="btn-row">
         <button class="btn btn-green" onclick="saveSettings()">💾 Сохранить</button>
         <button class="btn btn-blue"  onclick="loadConfig()">↺ Загрузить</button>
+        <button class="btn btn-red"   onclick="if(confirm('Перезагрузить ESP?'))doApi('/api/reboot')">↺ Перезагрузить</button>
       </div>
     </div>
     <div class="card">
@@ -563,7 +545,8 @@ input[type=checkbox]{width:auto}
         <b style="color:var(--amber)">Порог тревоги</b> — изменение веса для уведомления в Telegram (роение, кража).<br>
         <b style="color:var(--amber)">Эталонный груз</b> — масса гири при калибровке HX711.<br>
         <b style="color:var(--amber)">EMA α</b> — коэффициент фильтра: меньше = плавнее, медленнее реакция.<br>
-        <b style="color:var(--amber)">Deep Sleep</b> — интервал сна ESP. Меньше = чаще замеры, больше потребление.<br>
+        <b style="color:var(--amber)">Deep Sleep</b> — интервал сна ESP. Используется если расписание не задано.<br>
+        <b style="color:var(--amber)">Расписание</b> — конкретные времена пробуждения и записи лога (напр. 08:00 14:00 20:00). Если задано — приоритет над интервалом. Пустое поле = только интервал.<br>
         <b style="color:var(--amber)">Подсветка LCD</b> — 0 = всегда включена; иначе — таймаут без нажатий.
       </div>
     </div>
@@ -615,6 +598,7 @@ input[type=checkbox]{width:auto}
       <div class="btn-row">
         <button class="btn btn-amber" onclick="applyCalib()">✓ Применить</button>
         <button class="btn btn-blue"  onclick="doApi('/api/tare')">⊘ Тара</button>
+        <button class="btn btn-green" onclick="doApi('/api/save')">💾 Сохранить эталон</button>
       </div>
       <div style="font-size:13px;color:var(--text3);margin-top:10px;line-height:1.7">
         Подберите Cal.Factor так, чтобы показание<br>совпало с реальной массой эталонного груза.
@@ -630,6 +614,7 @@ input[type=checkbox]{width:auto}
       <div class="card-title">✉ Telegram Bot</div>
       <div class="form-row"><label>Bot Token (получить у @BotFather)</label><input type="password" id="tg-token" placeholder="123456789:ABC..." autocomplete="off"></div>
       <div class="form-row"><label>Chat ID (узнать через @userinfobot)</label><input type="text" id="tg-chatid" placeholder="-100123456789"></div>
+      <div class="form-row"><label>Интервал отчётов (мин, 0=откл, 360=6ч, 1440=раз в день)</label><input type="number" id="tg-report-int" min="0" max="10080" step="60" placeholder="360"></div>
       <div class="btn-row">
         <button class="btn btn-green" onclick="saveTelegram()">💾 Сохранить</button>
         <button class="btn btn-blue"  onclick="doApi('/api/tg/test')">✉ Тест</button>
@@ -868,12 +853,13 @@ function drawMini() {
   const svg=document.getElementById('mini-svg');
   if (!_all||_all.length<2) {
     const wt=_curWeight>0?_curWeight.toFixed(3)+' кг':'--';
-    svg.innerHTML='<text x="300" y="36" text-anchor="middle" fill="#f5a623" font-size="28" font-weight="bold">'+wt+'</text>'+
-      '<text x="300" y="68" text-anchor="middle" fill="#506040" font-size="13">Лог пуст — нет данных для графика</text>';
+    svg.innerHTML='<text x="450" y="120" text-anchor="middle" fill="#f5a623" font-size="28" font-weight="bold">'+wt+'</text>'+
+      '<text x="450" y="150" text-anchor="middle" fill="#506040" font-size="13">Лог пуст — нет данных для графика</text>';
     return;
   }
   const pts=_all.slice(-120);
-  drawLineSvg(svg,pts,'w','#f5a623',600,90,36,6,6,18,false);
+  _tipPts.mini=pts;
+  drawLineSvg(svg,pts,'w','#f5a623',900,350,60,10,12,50,true);
 }
 
 // ── Chart page ────────────────────────────────────────────────────────
@@ -1012,9 +998,9 @@ function drawLineSvg(svg,pts,key,color,W,H,L,R,T,B,showAxes) {
 function onTip(e,s){
   const pts=_tipPts[s];
   if(!pts||!pts.length) return;
-  const key={w:'w',t:'t',b:'b'}[s];
-  const color={w:'var(--amber)',t:'var(--blue)',b:'var(--green)'}[s];
-  const unit={w:' кг',t:' °C',b:' В'}[s];
+  const key={w:'w',t:'t',b:'b',mini:'w'}[s];
+  const color={w:'var(--amber)',t:'var(--blue)',b:'var(--green)',mini:'var(--amber)'}[s];
+  const unit={w:' кг',t:' °C',b:' В',mini:' кг'}[s];
   const W=900,L=60,R=10;
   const pW=W-L-R;
   const svg=e.currentTarget, rect=svg.getBoundingClientRect();
@@ -1133,7 +1119,9 @@ function loadConfig(){
     setV('cfg-alert',d.alertDelta); setV('cfg-calib',d.calibWeight);
     setV('cfg-ema',d.emaAlpha);     setV('cfg-sleep',d.sleepSec);
     setV('cfg-bl',d.lcdBlSec);
+    setV('cfg-sched',(d.schedTimes&&d.schedTimes.length>0)?d.schedTimes.join(' '):'');
     setV('tg-token',d.tgToken);    setV('tg-chatid',d.tgChatId);
+    if(d.tgReportInt!==undefined) setV('tg-report-int',d.tgReportInt);
     if(d.alertDelta) setText('tg-thresh',d.alertDelta+' кг');
     selWm(parseInt(d.wifiMode||0),true);
     if(d.wifiSsid) setV('wifi-ssid',d.wifiSsid);
@@ -1151,13 +1139,16 @@ function saveSettings(){
   if(!isNaN(e)) body.emaAlpha=e;
   if(!isNaN(s)) body.sleepSec=s;
   if(!isNaN(b)) body.lcdBlSec=b;
+  const sched=(g('cfg-sched').value||'').trim();
+  body.schedTimes=sched.length>0?sched.split(/\s+/).filter(t=>/^\d{1,2}:\d{2}$/.test(t)):[];
   fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>toast(d.msg||'OK',!d.ok)).catch(()=>toast('Нет связи',true));
 }
 
 // ── Telegram ──────────────────────────────────────────────────────────
 function saveTelegram(){
-  const body={token:document.getElementById('tg-token').value,chatId:document.getElementById('tg-chatid').value};
+  const ri=parseInt(document.getElementById('tg-report-int').value||'360');
+  const body={token:document.getElementById('tg-token').value,chatId:document.getElementById('tg-chatid').value,reportInt:isNaN(ri)?360:Math.max(0,Math.min(ri,10080))};
   fetch('/api/tg/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>toast(d.msg||'OK',!d.ok)).catch(()=>toast('Нет связи',true));
 }
@@ -1280,6 +1271,19 @@ setTimeout(autoRefresh,REFRESH);
 
 // Настройки читаются/записываются через Memory.h (web_get_*/save_web_settings)
 
+// Маскировка секретов: показывает первые 4 и последние 4 символа, остальное — звёздочки
+static String _maskSecret(const char *src) {
+  size_t len = strlen(src);
+  if (len == 0) return "";
+  if (len <= 8) return "****";
+  String out;
+  out.reserve(len);
+  for (size_t i = 0; i < len; i++) {
+    out += (i < 4 || i >= len - 4) ? src[i] : '*';
+  }
+  return out;
+}
+
 // ─── Uptime в читаемом виде ───────────────────────────────────────────────
 static String _uptime() {
   unsigned long s = millis() / 1000UL;
@@ -1300,58 +1304,20 @@ static void _sendJson(bool ok, const String &msg) {
   _srv.send(ok ? 200 : 400, "application/json", out);
 }
 
-// ─── Страница графика ─────────────────────────────────────────────────────
-static const char CHART_HTML[] PROGMEM = R"rawhtml(
-<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=/"></head><body></body></html>
-)rawhtml";
-
-// ─── Страница настроек WiFi (/wifi) ──────────────────────────────────────
-static const char WIFI_HTML[] PROGMEM = R"rawhtml(
-<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=/"></head><body></body></html>
-)rawhtml";
-
-// HTML-экранирование строки (защита от XSS)
-static String _htmlEscape(const char *src) {
-  String out;
-  out.reserve(strlen(src) + 8);
-  while (*src) {
-    switch (*src) {
-      case '<':  out += "&lt;";   break;
-      case '>':  out += "&gt;";   break;
-      case '&':  out += "&amp;";  break;
-      case '"':  out += "&quot;"; break;
-      case '\'': out += "&#39;";  break;
-      default:   out += *src;     break;
-    }
-    src++;
-  }
-  return out;
-}
-
-static String _buildWifiPage() {
-  String html = FPSTR(WIFI_HTML);
-  uint8_t wfMode = get_wifi_mode();
-  html.replace("__WF_AP__",     wfMode == 0 ? "checked" : "");
-  html.replace("__WF_STA__",    wfMode == 1 ? "checked" : "");
-  html.replace("__WF_STABLK__", wfMode == 1 ? "block" : "none");
-  char wfSsid[33];
-  get_wifi_ssid(wfSsid, sizeof(wfSsid));
-  if (wfSsid[0] == '\0') strncpy(wfSsid, WIFI_SSID, sizeof(wfSsid)-1);
-  html.replace("__WF_SSID__", _htmlEscape(wfSsid));
-  return html;
-}
-
 // ─── Маршруты ─────────────────────────────────────────────────────────────
 static inline void _activity() {
   lastActivityTime = millis();
   if (_wa.onActivity) _wa.onActivity();
+}
+static inline void _keepalive() {
+  // GET-поллинг НЕ сбрасывает таймер авто-сна — иначе deep sleep никогда не сработает
 }
 
 // Отправка PROGMEM-строки чанками (без копирования всего в heap)
 static void _sendProgmemChunked(const char *pgm) {
   _srv.setContentLength(CONTENT_LENGTH_UNKNOWN);
   _srv.send(200, "text/html; charset=utf-8", "");
-  size_t total = strlen_P(pgm);
+  size_t total = sizeof(PAGE_HTML) - 1;
   size_t sent = 0;
   char chunk[1024];
   while (sent < total) {
@@ -1371,7 +1337,7 @@ static void _handleRoot() {
 // ─── /api/config  GET — начальные значения для форм настроек ─────────────
 static void _handleConfig() {
   if (!_auth()) return;
-  StaticJsonDocument<384> doc;
+  StaticJsonDocument<512> doc;
   doc["alertDelta"]  = web_get_alert_delta();
   doc["calibWeight"] = web_get_calib_weight();
   doc["emaAlpha"]    = web_get_ema_alpha();
@@ -1383,8 +1349,20 @@ static void _handleConfig() {
     char tgTok[50], tgCid[16];
     get_tg_token(tgTok, sizeof(tgTok));
     get_tg_chatid(tgCid, sizeof(tgCid));
-    doc["tgToken"]  = tgTok;
+    doc["tgToken"]  = _maskSecret(tgTok);
     doc["tgChatId"] = tgCid;
+    doc["tgTokenSet"] = (tgTok[0] != '\0');
+    doc["tgReportInt"] = get_tg_report_interval_min();
+  }
+  {
+    uint16_t times[8]; uint8_t cnt;
+    get_sched_times(times, cnt);
+    JsonArray arr = doc.createNestedArray("schedTimes");
+    char tbuf[6];
+    for (uint8_t i = 0; i < cnt; i++) {
+      snprintf(tbuf, sizeof(tbuf), "%02d:%02d", times[i] / 60, times[i] % 60);
+      arr.add(tbuf);
+    }
   }
   String out; serializeJson(doc, out);
   _srv.send(200, "application/json", out);
@@ -1392,7 +1370,7 @@ static void _handleConfig() {
 
 static void _handleData() {
   if (!_auth()) return;
-  _activity();
+  _keepalive();  // поллинг — не сбрасывать подсветку
   StaticJsonDocument<512> doc;
   doc["weight"]   = *_wd.weight;
   doc["ref"]      = *_wd.lastSavedWeight;
@@ -1437,13 +1415,14 @@ static void _handleSave() {
 }
 
 // Forward declaration — используется в авто-бэкапе при сохранении настроек
-static String _buildBackupJson();
+// masked=true: секреты замаскированы (для GET /api/backup), false: полные (для SD-файла)
+static String _buildBackupJson(bool masked = false);
 
 static void _handleSettings() {
   if (!_auth()) return;
-  _activity();
   if (_srv.method() != HTTP_POST) { _sendJson(false,"Только POST"); return; }
-  StaticJsonDocument<384> doc;
+  _activity();
+  StaticJsonDocument<512> doc;
   DeserializationError err = deserializeJson(doc, _srv.arg("plain"));
   if (err) { _sendJson(false,"Ошибка JSON"); return; }
 
@@ -1501,6 +1480,19 @@ static void _handleSettings() {
     if (pass && strlen(pass) >= 8 && strlen(pass) <= 23) {
       set_ap_pass(pass);
     } else { _sendJson(false, "apPass: 8–23 символа"); return; }
+  }
+  if (doc.containsKey("schedTimes")) {
+    JsonArray arr = doc["schedTimes"].as<JsonArray>();
+    uint16_t times[8]; uint8_t cnt = 0;
+    for (JsonVariant v : arr) {
+      const char* s = v.as<const char*>();
+      if (!s) continue;
+      int h = 0, m = 0;
+      if (sscanf(s, "%d:%d", &h, &m) == 2 && h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+        if (cnt < 8) times[cnt++] = (uint16_t)h * 60 + m;
+      }
+    }
+    set_sched_times(times, cnt);
   }
 
   // Авто-бэкап на SD при изменении настроек
@@ -1560,6 +1552,11 @@ static void _handleTgSettings() {
   if (doc.containsKey("chatId")) {
     const char* c = doc["chatId"].as<const char*>();
     if (c && strlen(c) < 16) set_tg_chatid(c);
+  }
+  if (doc.containsKey("reportInt")) {
+    uint32_t v = doc["reportInt"].as<uint32_t>();
+    // 0 = откл, минимум 60 мин, максимум 10080 (7 дней)
+    if (v == 0 || (v >= 60 && v <= 10080)) set_tg_report_interval_min(v);
   }
   log_save_backup(_buildBackupJson());
   _sendJson(true, "Telegram настройки сохранены");
@@ -1654,38 +1651,41 @@ static void _handleLog() {
     _srv.streamFile(f, "text/csv");
     f.close();
   } else {
-    // С фильтром по дате — собираем в String и отдаём с Content-Length
-    // (ESP8266 требует известную длину иначе браузер обрывает соединение)
-    String csv;
-    csv.reserve(4096);
+    // С фильтром по дате — стримим чанками (chunked transfer) для экономии heap
+    String fname = "beehive_" + date + ".csv";
+    _srv.sendHeader("Content-Disposition", "attachment; filename=\"" + fname + "\"");
+    _srv.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    _srv.send(200, "text/csv; charset=utf-8", "");
     {
-      // Пишем через StringStream-обёртку
-      class StrStream : public Stream {
+      class ChunkStream : public Stream {
       public:
-        String &buf;
-        StrStream(String &b) : buf(b) {}
-        size_t write(uint8_t c) override { buf += (char)c; return 1; }
+        WebServerCompat &srv;
+        ChunkStream(WebServerCompat &s) : srv(s) {}
+        size_t write(uint8_t c) override { srv.sendContent(String((char)c)); return 1; }
         size_t write(const uint8_t *b, size_t s) override {
-          buf.concat((const char*)b, s);
+          // Отправляем чанками до 512 байт для эффективности
+          size_t sent = 0;
+          while (sent < s) {
+            size_t n = (s - sent > 512) ? 512 : (s - sent);
+            srv.sendContent((const char*)(b + sent), n);
+            sent += n;
+          }
           return s;
         }
         int available() override { return 0; }
         int read()      override { return -1; }
         int peek()      override { return -1; }
         void flush()    override {}
-      } ss(csv);
-      log_stream_csv_date(ss, date);
+      } cs(_srv);
+      log_stream_csv_date(cs, date);
     }
-    String fname = "beehive_" + date + ".csv";
-    _srv.sendHeader("Content-Disposition", "attachment; filename=\"" + fname + "\"");
-    _srv.send(200, "text/csv; charset=utf-8", csv);
   }
 }
 
 // ─── /api/daystat  GET — суточная статистика (фичи 12, 17) ──────────────
 static void _handleDayStat() {
   if (!_auth()) return;
-  _activity();
+  _keepalive();  // GET-поллинг — не сбрасывать подсветку
   // Дата из параметра или текущая из RTC
   String date = _srv.arg("date");
   if (date.length() == 0) date = *_wd.datetime;  // "DD.MM.YYYY HH:MM:SS" → берём первые 10
@@ -1734,14 +1734,14 @@ static void _handleLogClear() {
 // ─── /api/log/json  GET — лог в JSON ─────────────────────────────────────
 static void _handleLogJson() {
   if (!_auth()) return;
-  _activity();
+  _keepalive();  // GET-поллинг — не сбрасывать подсветку
   String json = log_to_json(100);
   _srv.send(200, "application/json", json);
 }
 
 // ─── /api/backup  GET — полный бэкап настроек EEPROM ──────────────────────
-static String _buildBackupJson() {
-  StaticJsonDocument<768> doc;
+static String _buildBackupJson(bool masked) {
+  StaticJsonDocument<896> doc;
   doc["_type"] = "BeehiveScale_backup";
   doc["_ver"]  = "4.1";
 
@@ -1758,16 +1758,29 @@ static String _buildBackupJson() {
   doc["emaAlpha"]     = web_get_ema_alpha();
   doc["sleepSec"]     = (unsigned long)get_sleep_sec();
   doc["lcdBlSec"]     = (unsigned int)get_lcd_bl_sec();
+  {
+    uint16_t times[8]; uint8_t cnt;
+    get_sched_times(times, cnt);
+    JsonArray arr = doc.createNestedArray("schedTimes");
+    char tbuf[6];
+    for (uint8_t i = 0; i < cnt; i++) {
+      snprintf(tbuf, sizeof(tbuf), "%02d:%02d", times[i] / 60, times[i] % 60);
+      arr.add(tbuf);
+    }
+  }
 
   // AP пароль
-  { char ap[24]; get_ap_pass(ap, sizeof(ap)); doc["apPass"] = ap; }
+  { char ap[24]; get_ap_pass(ap, sizeof(ap));
+    doc["apPass"] = masked ? _maskSecret(ap) : (const char*)ap;
+  }
 
   // Telegram
   { char tok[50], cid[16];
     get_tg_token(tok, sizeof(tok));
     get_tg_chatid(cid, sizeof(cid));
-    doc["tgToken"]  = tok;
+    doc["tgToken"]  = masked ? _maskSecret(tok) : (const char*)tok;
     doc["tgChatId"] = cid;
+    doc["tgReportInt"] = get_tg_report_interval_min();
   }
 
   // WiFi
@@ -1776,7 +1789,7 @@ static String _buildBackupJson() {
     get_wifi_ssid(ss, sizeof(ss));
     get_wifi_sta_pass(wp, sizeof(wp));
     doc["wifiSsid"] = ss;
-    doc["wifiPass"] = wp;
+    doc["wifiPass"] = masked ? _maskSecret(wp) : (const char*)wp;
   }
 
   String out;
@@ -1787,7 +1800,8 @@ static String _buildBackupJson() {
 static void _handleBackup() {
   if (!_auth()) return;
   _activity();
-  String json = _buildBackupJson();
+  // GET отдаёт файл с полными секретами (для скачивания бэкапа)
+  String json = _buildBackupJson(false);
   _srv.sendHeader("Content-Disposition", "attachment; filename=\"beehive_backup.json\"");
   _srv.send(200, "application/json", json);
 
@@ -1801,7 +1815,7 @@ static void _handleBackupRestore() {
   _activity();
   if (_srv.method() != HTTP_POST) { _sendJson(false, "Только POST"); return; }
 
-  StaticJsonDocument<768> doc;
+  StaticJsonDocument<896> doc;
   DeserializationError err = deserializeJson(doc, _srv.arg("plain"));
   if (err) { _sendJson(false, "Ошибка JSON"); return; }
 
@@ -1860,10 +1874,24 @@ static void _handleBackupRestore() {
   if (doc.containsKey("sleepSec")) { uint32_t v = doc["sleepSec"].as<uint32_t>(); if (v >= 30 && v <= 86400) { set_sleep_sec(v); restored++; } }
   if (doc.containsKey("lcdBlSec")) { uint16_t v = doc["lcdBlSec"].as<uint16_t>(); if (v <= 3600) { set_lcd_bl_sec(v); restored++; } }
   if (doc.containsKey("apPass"))   { const char* p = doc["apPass"] | ""; if (strlen(p) >= 8 && strlen(p) <= 23) { set_ap_pass(p); restored++; } }
+  if (doc.containsKey("schedTimes")) {
+    JsonArray arr = doc["schedTimes"].as<JsonArray>();
+    uint16_t times[8]; uint8_t cnt = 0;
+    for (JsonVariant v : arr) {
+      const char* s = v.as<const char*>();
+      if (!s) continue;
+      int h = 0, m = 0;
+      if (sscanf(s, "%d:%d", &h, &m) == 2 && h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+        if (cnt < 8) times[cnt++] = (uint16_t)h * 60 + m;
+      }
+    }
+    set_sched_times(times, cnt); restored++;
+  }
 
   // Telegram
-  if (doc.containsKey("tgToken"))  { const char* t = doc["tgToken"] | "";  if (strlen(t) > 0) { set_tg_token(t); restored++; } }
+  if (doc.containsKey("tgToken"))  { const char* t = doc["tgToken"] | "";  if (strlen(t) > 0 && strchr(t, '*') == NULL) { set_tg_token(t); restored++; } }
   if (doc.containsKey("tgChatId")) { const char* c = doc["tgChatId"] | ""; if (strlen(c) > 0) { set_tg_chatid(c); restored++; } }
+  if (doc.containsKey("tgReportInt")) { uint32_t v = doc["tgReportInt"].as<uint32_t>(); if (v == 0 || (v >= 60 && v <= 10080)) { set_tg_report_interval_min(v); restored++; } }
 
   // WiFi
   if (doc.containsKey("wifiMode")) { uint8_t m = doc["wifiMode"].as<uint8_t>(); if (m <= 1) { set_wifi_mode(m); restored++; } }

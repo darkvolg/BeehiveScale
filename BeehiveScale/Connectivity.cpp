@@ -115,6 +115,7 @@ void wifi_ensure_connected() {
 
   static unsigned long lastReconnectAttempt = 0;
   static unsigned long connectionFailedAt = 0;
+  static bool hasPenalty = false;
   const unsigned long RECONNECT_DEBOUNCE_MS = 10000UL;
   const unsigned long PENALTY_MS = 300000UL; // 5 минут отдыха при неудаче
 
@@ -123,7 +124,7 @@ void wifi_ensure_connected() {
     unsigned long now = millis();
 
     // Если была неудача, ждем PENALTY_MS перед следующей попыткой
-    if (connectionFailedAt > 0 && now - connectionFailedAt < PENALTY_MS) {
+    if (hasPenalty && now - connectionFailedAt < PENALTY_MS) {
       return;
     }
 
@@ -149,29 +150,28 @@ void wifi_ensure_connected() {
 
     if (WiFi.status() == WL_CONNECTED) {
       _wifiStatus = WIFI_CONNECTED;
-      connectionFailedAt = 0;
+      hasPenalty = false;
       Serial.println(F("[WiFi] Reconnected."));
     } else {
       connectionFailedAt = millis();
+      hasPenalty = true;
       Serial.println(F("[WiFi] Reconnect failed, cooling down..."));
     }
+  } else if (hasPenalty) {
+    // WiFi восстановился самостоятельно — сбросить penalty
+    hasPenalty = false;
   }
 }
 
 static bool _wifi_active() {
-  if (get_wifi_mode() == 0) {
-    return WiFi.softAPIP() != IPAddress(0,0,0,0);
-  }
+  // В AP-режиме нет интернета — внешние сервисы (TG, ThingSpeak, NTP) недоступны
+  if (get_wifi_mode() == 0) return false;
   return WiFi.status() == WL_CONNECTED;
 }
 
 static const char* TG_HOST = "api.telegram.org";
 
-#if defined(ESP8266)
 #include <LittleFS.h>
-#else
-#include <LittleFS.h>
-#endif
 
 #define QUEUE_FILE "/queue.bin"
 #define MAX_QUEUE_ITEMS 50
@@ -230,11 +230,8 @@ void queue_process() {
 #if defined(ESP8266)
     ESP.wdtFeed();
 #endif
-    tg_send_report(item.weight, item.temp, item.hum, item.datetime);
-    delay(1000);
-#if defined(ESP8266)
-    ESP.wdtFeed();
-#endif
+    // tg_send_report НЕ вызывается из очереди: очередь только для ThingSpeak.
+    // TG-отчёты управляются отдельным таймером TG_REPORT_INTERVAL.
     yield();
   }
   f.close();
@@ -465,8 +462,6 @@ bool ntp_sync_time() {
     return false;
   }
 #endif
-
-  return false;
 }
 
 void ntp_loop() {

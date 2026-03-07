@@ -5,19 +5,11 @@
 #ifdef USE_SD_CARD
   #include <SPI.h>
   #include <SD.h>
-  #if defined(ESP8266)
-    #include <LittleFS.h>
-  #elif defined(ESP32)
-    #include <LittleFS.h>
-  #endif
+  #include <LittleFS.h>
   static bool _sdOk      = false;
   static bool _fallback  = false;  // true = SD недоступна, используем LittleFS
 #else
-  #if defined(ESP8266)
-    #include <LittleFS.h>
-  #elif defined(ESP32)
-    #include <LittleFS.h>
-  #endif
+  #include <LittleFS.h>
   static bool _flashOk   = false;
   static bool _fallback  = false;
 #endif
@@ -516,9 +508,7 @@ String log_to_json(int maxRows) {
     char c = f.read();
     if (c == '\n') totalLines++;
   }
-  f.close();
-  f = _fs_open_read(LOG_FILE);
-  if (!f) return "[]";
+  f.seek(0);
 
   // Пропускаем заголовок
   f.readStringUntil('\n');
@@ -526,6 +516,8 @@ String log_to_json(int maxRows) {
   int skipLines = (dataLines > maxRows) ? (dataLines - maxRows) : 0;
 
   String out = "[";
+  // Pre-allocate: ~80 байт JSON на строку, снижает фрагментацию heap на ESP8266
+  out.reserve(2 + (dataLines < maxRows ? dataLines : maxRows) * 80);
   bool first = true;
   int lineIdx = 0;
 
