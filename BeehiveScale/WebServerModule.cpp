@@ -723,7 +723,7 @@ function toast(msg, err) {
 
 // ── API ───────────────────────────────────────────────────────────────
 function doApi(url) {
-  const method = (url.includes('/data')||url.includes('/log')||url.includes('/config')||url.includes('/daystat')||url.includes('/backup')) ? 'GET' : 'POST';
+  const method = (url.includes('/data')||(url.includes('/log')&&!url.includes('/clear'))||url.includes('/config')||url.includes('/daystat')||url.includes('/backup')) ? 'GET' : 'POST';
   return fetch(url,{method}).then(r=>r.json()).then(d=>{
     toast(d.msg||(d.ok?'OK':'Ошибка'), !d.ok); return d;
   }).catch(()=>toast('Нет связи',true));
@@ -782,8 +782,6 @@ function updDash(d) {
   const freeKnown=!!d.sdFallback;
   const totalKb=freeKnown?sdKb+freeKb:0;
   const memPct=totalKb>0?Math.min(100,sdKb/totalKb*100):0;
-  setText('sd-log-size',sdKb+' KB');
-  setText('sd-free',freeKnown?freeKb+' KB':'н/д');
   // Gauge памяти/лога
   const mColor=memPct>90?'var(--red)':memPct>70?'var(--amber)':'var(--green)';
   const memGauge=document.getElementById('mem-gauge');
@@ -1042,8 +1040,8 @@ function getExpData() {
 
 function exportCsv(){
   const {data,cols}=getExpData();
-  let csv='\uFEFF'+cols.map(c=>c.h).join(',')+'\n';
-  data.forEach(d=>{csv+=cols.map(c=>d[c.k]||'').join(',')+'\n';});
+  let csv='\uFEFF'+cols.map(c=>c.h).join(';')+'\n';
+  data.forEach(d=>{csv+=cols.map(c=>d[c.k]||'').join(';')+'\n';});
   dlBlob(new Blob([csv],{type:'text/csv;charset=utf-8'}),'beehive_log.csv');
 }
 
@@ -1083,7 +1081,6 @@ function _doExcel(){
 }
 
 function dlBlob(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();}
-function dlByDate(){const d=document.getElementById('log-date').value;if(!d){toast('Выберите дату',true);return;}window.open('/api/log?date='+d,'_blank');}
 function dlSdDate(){const d=document.getElementById('exp-date-sd').value;if(!d){toast('Выберите дату',true);return;}window.open('/api/log?date='+d,'_blank');}
 
 // ── Backup ─────────────────────────────────────────────────────────────
@@ -1249,7 +1246,7 @@ function refreshApiView(){
   const now=new Date();
   const fmt=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   const today=fmt(now), weekAgo=fmt(new Date(now-7*86400000));
-  ['log-date','exp-date-sd'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=today;});
+  ['exp-date-sd'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=today;});
   document.getElementById('exp-from').value=weekAgo;
   document.getElementById('exp-to').value=today;
 })();
@@ -1337,7 +1334,7 @@ static void _handleRoot() {
 // ─── /api/config  GET — начальные значения для форм настроек ─────────────
 static void _handleConfig() {
   if (!_auth()) return;
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<640> doc;
   doc["alertDelta"]  = web_get_alert_delta();
   doc["calibWeight"] = web_get_calib_weight();
   doc["emaAlpha"]    = web_get_ema_alpha();
@@ -1546,7 +1543,7 @@ static void _handleTgSettings() {
   if (err) { _sendJson(false,"Ошибка JSON"); return; }
   if (doc.containsKey("token")) {
     const char* t = doc["token"].as<const char*>();
-    if (t && strlen(t) > 0 && strlen(t) < 50) set_tg_token(t);
+    if (t && strlen(t) > 0 && strlen(t) < 50 && strchr(t, '*') == NULL) set_tg_token(t);
     else if (t && strlen(t) == 0) set_tg_token("");
   }
   if (doc.containsKey("chatId")) {
@@ -1634,6 +1631,17 @@ static void _handleLog() {
     return;
   }
   String date = _srv.arg("date");  // "" если параметр не передан
+  // Санитизация: только цифры, '-' и '.', длина ≤10 (защита от HTTP header injection)
+  if (date.length() > 0) {
+    if (date.length() > 10) date = date.substring(0, 10);
+    for (unsigned int i = 0; i < date.length(); i++) {
+      char ch = date[i];
+      if (!isdigit(ch) && ch != '-' && ch != '.') {
+        _srv.send(400, "text/plain", "Bad date");
+        return;
+      }
+    }
+  }
   if (date.length() == 0) {
     // Без фильтра — стримим весь файл напрямую
     File f;
@@ -1660,24 +1668,32 @@ static void _handleLog() {
       class ChunkStream : public Stream {
       public:
         WebServerCompat &srv;
-        ChunkStream(WebServerCompat &s) : srv(s) {}
-        size_t write(uint8_t c) override { srv.sendContent(String((char)c)); return 1; }
+        char buf[64];
+        uint8_t pos;
+        ChunkStream(WebServerCompat &s) : srv(s), pos(0) {}
+        size_t write(uint8_t c) override {
+          buf[pos++] = (char)c;
+          if (pos >= sizeof(buf)) _flush_buf();
+          return 1;
+        }
         size_t write(const uint8_t *b, size_t s) override {
-          // Отправляем чанками до 512 байт для эффективности
           size_t sent = 0;
           while (sent < s) {
             size_t n = (s - sent > 512) ? 512 : (s - sent);
+            if (pos > 0) _flush_buf();
             srv.sendContent((const char*)(b + sent), n);
             sent += n;
           }
           return s;
         }
+        void _flush_buf() { if (pos > 0) { srv.sendContent(buf, pos); pos = 0; } }
         int available() override { return 0; }
         int read()      override { return -1; }
         int peek()      override { return -1; }
-        void flush()    override {}
+        void flush()    override { _flush_buf(); }
       } cs(_srv);
       log_stream_csv_date(cs, date);
+      cs.flush();
     }
   }
 }
@@ -1712,9 +1728,10 @@ static void _handleDayStat() {
     (month >= 9 && month <= 11) ? "Osen"  : "Zima";
   doc["season"] = season;
 
-  // Дней наблюдений: размер лога / (примерно 50 байт/строка / 1440 строк в сутки)
+  // Дней наблюдений: всего строк / записей в день (из суточной статистики)
   size_t logSz = log_size();
-  doc["daysSinceStart"] = (int)(logSz / (50UL * 1440UL));
+  int totalRows = (logSz > 50) ? (int)((logSz - 50) / 50) : 0;  // ~50 байт/строка, минус заголовок
+  doc["daysSinceStart"] = (ds.count > 0) ? (totalRows / ds.count) : (totalRows > 0 ? 1 : 0);
 
   // Последнее значительное изменение — дельта текущий - опорный
   doc["deltaKg"] = *_wd.weight - *_wd.prevWeight;

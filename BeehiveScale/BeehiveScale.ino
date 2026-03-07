@@ -81,7 +81,6 @@ HX711             scale;
 
 // Примечание: Serial.end() вызывается перед scale_init() (GPIO1=TX=SCK для HX711).
 // После Serial.end() вызовы Serial.print() безопасны — UART отключен, данные никуда не идут.
-// Но Serial команды (handle_serial_commands) не работают — это штатно при SCK на GPIO1.
 
 struct SystemState {
   float calibrationFactor = 2280.0f;
@@ -111,7 +110,6 @@ ButtonState    btnMain;
 ButtonState    btnMenu;
 SleepPersistData persist;
 bool webServerStarted = false;
-String serialBuffer = "";
 unsigned long lastActivityTime = 0;  // Таймер бездействия для auto-sleep
 bool diagRunRequested = false;       // Флаг запуска диагностики
 bool diagDone = false;               // Диагностика завершена (сводка на экране)
@@ -135,7 +133,6 @@ void perform_calibration();
 void adjust_calibration();
 void show_splash_screen();
 void start_webserver();
-void handle_serial_commands();
 void check_auto_sleep();
 
 void setup() {
@@ -188,12 +185,9 @@ void setup() {
   sched_settings_init();
   tg_report_settings_init();
   tg_settings_init();
-  // prevWeight при загрузке = lastSavedWeight (последний стабильный вес предыдущей сессии).
-  // Это тот же источник что и у сплэш-экрана → сплэш и меню дельты показывают одно и то же.
-  // Если весы выключили при 5.5 кг, убрали 5 кг и включили при 0.5 — оба экрана
-  // покажут -5.0 кг. Stable save каждые 10 мин дополнительно синхронизирует
-  // ADDR_PREV_WEIGHT, так что load_prev_weight(fallback) тоже подтянется со временем.
-  sys.prevWeight = sys.lastSavedWeight;
+  // prevWeight при загрузке из EEPROM addr 30 (эталон пользователя).
+  // Fallback на lastSavedWeight если EEPROM addr 30 ещё не записан.
+  sys.prevWeight = load_prev_weight(sys.lastSavedWeight);
 
   bat_init();
 
@@ -285,8 +279,6 @@ void loop() {
     MDNS.update();
 #endif
   }
-  handle_serial_commands();
-
   static unsigned long lastTempRead   = 0;
   static unsigned long lastTsUpload   = 0;
   static unsigned long lastTgReport   = 0;
@@ -437,11 +429,8 @@ void loop() {
     if (doTgReport) {
       TimeStamp ts = rtc_now();
       String dt = rtc_format_datetime(ts);
-      if (!tg_send_report(sys.smoothedWeight, sys.tempData.temperature,
-                          sys.tempData.humidity, dt)) {
-        queue_add(sys.smoothedWeight, sys.tempData.temperature,
-                  sys.tempData.humidity, rtc_temperature(), dt);
-      }
+      tg_send_report(sys.smoothedWeight, sys.tempData.temperature,
+                     sys.tempData.humidity, dt);
       lastTgReport = now;
     }
   }
@@ -1365,77 +1354,3 @@ void show_splash_screen() {
   sys.needsRedraw = true;
 }
 
-void handle_serial_commands() {
-  while (Serial.available()) {
-    char c = Serial.read();
-    if (c == '\n' || c == '\r') {
-      if (serialBuffer.length() > 0) {
-        if (serialBuffer == "NTP") {
-          Serial.println(F("\n[CMD] NTP sync..."));
-          if (ntp_sync_time()) {
-            Serial.println(F("[CMD] OK!"));
-          } else {
-            Serial.println(F("[CMD] ERROR!"));
-          }
-        }
-        else if (serialBuffer == "TIME") {
-          if (sys.currentTime.valid) {
-            Serial.print(F("\n[CMD] Time: "));
-            Serial.println(rtc_format_datetime(sys.currentTime));
-          } else {
-            Serial.println(F("\n[CMD] RTC error"));
-          }
-        }
-        else if (serialBuffer.startsWith("SETTIME")) {
-          int y, mo, d, h, mi, s;
-          if (sscanf(serialBuffer.c_str(), "SETTIME %d %d %d %d %d %d",
-                     &y, &mo, &d, &h, &mi, &s) == 6) {
-            if (y < 2000 || y > 2099 || mo < 1 || mo > 12 || d < 1 || d > 31 ||
-                h < 0 || h > 23 || mi < 0 || mi > 59 || s < 0 || s > 59) {
-              Serial.println(F("\n[CMD] Invalid date/time values!"));
-            } else if (rtc_set(y, mo, d, h, mi, s)) {
-              Serial.println(F("\n[CMD] Time set!"));
-            } else {
-              Serial.println(F("\n[CMD] RTC error!"));
-            }
-          } else {
-            Serial.println(F("\n[CMD] Format: SETTIME YYYY MM DD HH MM SS"));
-          }
-        }
-        else if (serialBuffer == "STATUS") {
-          Serial.println(F("\n=== STATUS ==="));
-          Serial.print(F("Weight: ")); Serial.println(sys.smoothedWeight, 2);
-          Serial.print(F("Temp: ")); Serial.println(sys.tempData.temperature, 1);
-          Serial.print(F("WiFi: ")); Serial.println(sys.wifiOk ? "OK" : "NO");
-          Serial.print(F("Sensor: ")); Serial.println(sys.sensorReady ? "OK" : "ERROR");
-#if defined(ESP32)
-          Serial.print(F("Heap: ")); Serial.print(ESP.getFreeHeap()); Serial.println(" b");
-#endif
-          Serial.println(F("=============\n"));
-        }
-        else if (serialBuffer == "REBOOT") {
-          Serial.println(F("\n[CMD] Rebooting..."));
-          Serial.flush();
-          delay(500);
-          ESP.restart();
-        }
-        else if (serialBuffer == "HELP") {
-          Serial.println(F("\n=== COMMANDS ==="));
-          Serial.println(F("  NTP                     - sync time"));
-          Serial.println(F("  TIME                    - show time"));
-          Serial.println(F("  SETTIME YYYY MM DD ...  - set time"));
-          Serial.println(F("  STATUS                  - system status"));
-          Serial.println(F("  REBOOT                  - restart\n"));
-        }
-        else {
-          Serial.println(F("\n[CMD] Unknown. Type HELP"));
-        }
-        serialBuffer = "";
-      }
-    } else {
-      if (serialBuffer.length() < 64) {
-        serialBuffer += c;
-      }
-    }
-  }
-}

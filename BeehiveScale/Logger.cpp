@@ -16,7 +16,7 @@
 
 // UTF-8 BOM (\xEF\xBB\xBF) + разделитель ";" для корректного открытия в Excel
 // (русская локаль Excel использует ";" как разделитель столбцов)
-static const char CSV_HEADER[] = "datetime;weight_kg;temp_c;humidity_pct;bat_v\n";
+static const char CSV_HEADER[] = "\xEF\xBB\xBF" "datetime;weight_kg;temp_c;humidity_pct;bat_v\n";
 
 // ─── Хелпер: запятая→точка для парсинга CSV с десятичной запятой ─────────
 static float commaToFloat(const String &s) {
@@ -225,6 +225,30 @@ static bool _validate_row(const String &datetime, float weight, float tempC,
   return true;
 }
 
+// ─── Форматирование и запись одной CSV-строки ─────────────────────────────
+static void _write_csv_row(File &f, const String &datetime, float weight,
+                           float tempC, float humidity, float batV) {
+  if (isnan(tempC)    || isinf(tempC)    || tempC    <= -90.0f) tempC    = 0.0f;
+  if (isnan(humidity) || isinf(humidity) || humidity <= -90.0f) humidity = 0.0f;
+  if (batV < 0.1f) batV = 0.0f;
+
+  char wBuf[12], tBuf[12], hBuf[12], bBuf[12];
+  snprintf(wBuf, sizeof(wBuf), "%.2f", weight);
+  snprintf(tBuf, sizeof(tBuf), "%.1f", tempC);
+  snprintf(hBuf, sizeof(hBuf), "%.1f", humidity);
+  snprintf(bBuf, sizeof(bBuf), "%.2f", batV);
+  for (char *p = wBuf; *p; p++) if (*p == '.') *p = ',';
+  for (char *p = tBuf; *p; p++) if (*p == '.') *p = ',';
+  for (char *p = hBuf; *p; p++) if (*p == '.') *p = ',';
+  for (char *p = bBuf; *p; p++) if (*p == '.') *p = ',';
+
+  f.print(datetime); f.print(';');
+  f.print(wBuf);     f.print(';');
+  f.print(tBuf);     f.print(';');
+  f.print(hBuf);     f.print(';');
+  f.print(bBuf);     f.print('\n');
+}
+
 // ─── Запись строки ────────────────────────────────────────────────────────
 
 void log_append(const String &datetime, float weight, float tempC,
@@ -287,23 +311,7 @@ void log_append(const String &datetime, float weight, float tempC,
           ff = LittleFS.open(LOG_FILE, "a");
         }
         if (ff) {
-          if (isnan(tempC)    || isinf(tempC)    || tempC    <= -90.0f) tempC    = 0.0f;
-          if (isnan(humidity) || isinf(humidity) || humidity <= -90.0f) humidity = 0.0f;
-          if (batV < 0.1f) batV = 0.0f;
-          char wBuf[12], tBuf[12], hBuf[12], bBuf[12];
-          snprintf(wBuf, sizeof(wBuf), "%.2f", weight);
-          snprintf(tBuf, sizeof(tBuf), "%.1f", tempC);
-          snprintf(hBuf, sizeof(hBuf), "%.1f", humidity);
-          snprintf(bBuf, sizeof(bBuf), "%.2f", batV);
-          for (char *p = wBuf; *p; p++) if (*p == '.') *p = ',';
-          for (char *p = tBuf; *p; p++) if (*p == '.') *p = ',';
-          for (char *p = hBuf; *p; p++) if (*p == '.') *p = ',';
-          for (char *p = bBuf; *p; p++) if (*p == '.') *p = ',';
-          ff.print(datetime); ff.print(';');
-          ff.print(wBuf);     ff.print(';');
-          ff.print(tBuf);     ff.print(';');
-          ff.print(hBuf);     ff.print(';');
-          ff.print(bBuf);     ff.print('\n');
+          _write_csv_row(ff, datetime, weight, tempC, humidity, batV);
           ff.close();
         }
       }
@@ -312,28 +320,7 @@ void log_append(const String &datetime, float weight, float tempC,
     return;
   }
 
-  // Нормализация: ошибочные значения → 0
-  if (isnan(tempC)    || isinf(tempC)    || tempC    <= -90.0f) tempC    = 0.0f;
-  if (isnan(humidity) || isinf(humidity) || humidity <= -90.0f) humidity = 0.0f;
-  if (batV < 0.1f) batV = 0.0f;
-
-  // Формат с запятой как десятичный разделитель (для русской локали Excel)
-  char wBuf[12], tBuf[12], hBuf[12], bBuf[12];
-  snprintf(wBuf, sizeof(wBuf), "%.2f", weight);
-  snprintf(tBuf, sizeof(tBuf), "%.1f", tempC);
-  snprintf(hBuf, sizeof(hBuf), "%.1f", humidity);
-  snprintf(bBuf, sizeof(bBuf), "%.2f", batV);
-  // Заменяем точку на запятую
-  for (char *p = wBuf; *p; p++) if (*p == '.') *p = ',';
-  for (char *p = tBuf; *p; p++) if (*p == '.') *p = ',';
-  for (char *p = hBuf; *p; p++) if (*p == '.') *p = ',';
-  for (char *p = bBuf; *p; p++) if (*p == '.') *p = ',';
-
-  f.print(datetime); f.print(';');
-  f.print(wBuf);     f.print(';');
-  f.print(tBuf);     f.print(';');
-  f.print(hBuf);     f.print(';');
-  f.print(bBuf);     f.print('\n');
+  _write_csv_row(f, datetime, weight, tempC, humidity, batV);
   f.close();
 }
 
@@ -517,7 +504,8 @@ String log_to_json(int maxRows) {
 
   String out = "[";
   // Pre-allocate: ~80 байт JSON на строку, снижает фрагментацию heap на ESP8266
-  out.reserve(2 + (dataLines < maxRows ? dataLines : maxRows) * 80);
+  int rows = (dataLines < 0) ? 0 : (dataLines < maxRows ? dataLines : maxRows);
+  out.reserve(2 + rows * 80);
   bool first = true;
   int lineIdx = 0;
 

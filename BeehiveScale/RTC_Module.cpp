@@ -48,10 +48,10 @@ float rtc_temperature() {
 }
 
 String rtc_format_datetime(const TimeStamp &t) {
-  if (!t.valid) return F("??/?? ??:??  ");
-  char buf[17];
-  snprintf(buf, sizeof(buf), "%02u.%02u.%04u %02u:%02u",
-           t.day, t.month, t.year, t.hour, t.minute);
+  if (!t.valid) return F("??/?? ??:??:??");
+  char buf[20];
+  snprintf(buf, sizeof(buf), "%02u.%02u.%04u %02u:%02u:%02u",
+           t.day, t.month, t.year, t.hour, t.minute, t.second);
   return String(buf);
 }
 

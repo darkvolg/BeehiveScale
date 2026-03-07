@@ -384,6 +384,7 @@ static uint32_t _tgReportIntervalMin = 360;  // 6 часов по умолчан
 static bool     _tgRptLoaded = false;
 
 void tg_report_settings_init() {
+  if (_tgRptLoaded) return;
   byte magic;
   EEPROM.get(EEPROM_ADDR_TG_REPORT_MAGIC, magic);
   if (magic == EEPROM_MAGIC_TG_RPT_VALUE) {
