@@ -24,11 +24,15 @@ static float commaToFloat(const String &s) {
   tmp.replace(',', '.');
   return tmp.toFloat();
 }
-// Замена запятой на точку in-place для вставки в JSON
-static String commaToPoint(const String &s) {
-  String tmp = s;
-  tmp.replace(',', '.');
-  return tmp;
+// Замена запятой на точку in-place (без heap-аллокации) для вставки в JSON
+// Записывает результат в buf (maxLen включая '\0'), возвращает buf
+static char* commaToPoint(const String &s, char *buf, size_t maxLen) {
+  size_t len = s.length();
+  if (len >= maxLen) len = maxLen - 1;
+  const char *src = s.c_str();
+  for (size_t i = 0; i < len; i++) buf[i] = (src[i] == ',') ? '.' : src[i];
+  buf[len] = '\0';
+  return buf;
 }
 
 // ─── Внутренние хелперы (абстракция над SD / LittleFS) ──────────────────
@@ -390,35 +394,87 @@ size_t log_stream_csv_date(Stream &out, const String &date) {
   File f = _fs_open_read(LOG_FILE);
   if (!f) return 0;
 
+  // Нормализуем date к "DD.MM.YYYY" один раз (без повторных String-аллокаций)
+  char cmpDate[12] = {0};
+  bool hasFilter = (date.length() == 10);
+  if (hasFilter) {
+    if (date.charAt(4) == '-') {
+      // "YYYY-MM-DD" → "DD.MM.YYYY"
+      snprintf(cmpDate, sizeof(cmpDate), "%.2s.%.2s.%.4s",
+               date.c_str()+8, date.c_str()+5, date.c_str());
+    } else {
+      memcpy(cmpDate, date.c_str(), 10);
+      cmpDate[10] = '\0';
+    }
+  }
+
   // Всегда печатаем заголовок
   out.print(CSV_HEADER);
   size_t count = 0;
 
-  // Пропускаем заголовок из файла
-  f.readStringUntil('\n');
+  // Читаем построчно через char-буфер (без readStringUntil / String)
+  char buf[128];
+  int pos = 0;
+  bool headerSkipped = false;
 
   while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) continue;
-    if (date.length() > 0) {
-      // datetime в формате "DD.MM.YYYY HH:MM:SS" → первые 10 символов = "DD.MM.YYYY"
-      // date параметр может прийти как "YYYY-MM-DD" (из браузера) или "DD.MM.YYYY"
-      String rowDate = line.substring(0, 10);  // "DD.MM.YYYY"
-      // Нормализуем date к "DD.MM.YYYY" если пришло "YYYY-MM-DD"
-      String cmpDate = date;
-      if (date.length() == 10 && date.charAt(4) == '-') {
-        // "YYYY-MM-DD" → "DD.MM.YYYY"
-        cmpDate = date.substring(8, 10) + "." + date.substring(5, 7) + "." + date.substring(0, 4);
+    int c = f.read();
+    if (c < 0) break;
+    if (c == '\n' || c == '\r') {
+      if (pos == 0) continue;  // пустая строка
+      buf[pos] = '\0';
+      if (!headerSkipped) {
+        headerSkipped = true;
+        pos = 0;
+        continue;
       }
-      if (!rowDate.equals(cmpDate)) continue;
+      // Фильтр по дате: первые 10 символов строки
+      if (hasFilter && (pos < 10 || memcmp(buf, cmpDate, 10) != 0)) {
+        pos = 0;
+        continue;
+      }
+      out.write((const uint8_t*)buf, pos);
+      out.print('\n');
+      count++;
+      pos = 0;
+    } else {
+      if (pos < (int)sizeof(buf) - 1) buf[pos++] = (char)c;
     }
-    out.print(line);
-    out.print('\n');
-    count++;
+  }
+  // Последняя строка без '\n'
+  if (pos > 0) {
+    buf[pos] = '\0';
+    if (!headerSkipped) { /* only header, no data */ }
+    else if (!hasFilter || (pos >= 10 && memcmp(buf, cmpDate, 10) == 0)) {
+      out.write((const uint8_t*)buf, pos);
+      out.print('\n');
+      count++;
+    }
   }
   f.close();
   return count;
+}
+
+// ─── Первая дата в логе (DD.MM.YYYY) для подсчёта дней наблюдений ────────
+// Возвращает true и заполняет buf (минимум 11 символов) датой первой записи
+bool log_first_date(char *buf, size_t bufLen) {
+  if (bufLen < 11 || !_fs_ok() || !_fs_exists(LOG_FILE)) return false;
+  File f = _fs_open_read(LOG_FILE);
+  if (!f) return false;
+  f.readStringUntil('\n');  // пропустить заголовок
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() < 10) continue;
+    if (line.startsWith("datetime") || line.indexOf("weight_kg") >= 0) continue;
+    // Первые 10 символов = "DD.MM.YYYY"
+    memcpy(buf, line.c_str(), 10);
+    buf[10] = '\0';
+    f.close();
+    return true;
+  }
+  f.close();
+  return false;
 }
 
 // ─── Фича 12: суточная статистика min/max вес и температура ──────────────
@@ -538,17 +594,18 @@ String log_to_json(int maxRows) {
     float w = commaToFloat(wgt);
     if (isnan(w) || isinf(w) || w < -5.0f || w > 500.0f) continue;
 
+    char cb[16];  // общий буфер для commaToPoint (макс длина числа ~12 символов)
     if (!first) out += ',';
     out += F("{\"dt\":\"");
     out += dt;
     out += F("\",\"w\":");
-    out += commaToPoint(wgt);
+    out += commaToPoint(wgt, cb, sizeof(cb));
     out += F(",\"t\":");
-    if (tmp.length() == 0) out += F("-99"); else out += commaToPoint(tmp);
+    if (tmp.length() == 0) out += F("-99"); else out += commaToPoint(tmp, cb, sizeof(cb));
     out += F(",\"h\":");
-    if (hum.length() == 0) out += F("-99"); else out += commaToPoint(hum);
+    if (hum.length() == 0) out += F("-99"); else out += commaToPoint(hum, cb, sizeof(cb));
     out += F(",\"b\":");
-    out += commaToPoint(bat);
+    out += commaToPoint(bat, cb, sizeof(cb));
     out += '}';
     first = false;
   }

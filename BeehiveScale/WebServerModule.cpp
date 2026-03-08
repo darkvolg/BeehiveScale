@@ -1117,7 +1117,9 @@ function loadConfig(){
     setV('cfg-ema',d.emaAlpha);     setV('cfg-sleep',d.sleepSec);
     setV('cfg-bl',d.lcdBlSec);
     setV('cfg-sched',(d.schedTimes&&d.schedTimes.length>0)?d.schedTimes.join(' '):'');
-    setV('tg-token',d.tgToken);    setV('tg-chatid',d.tgChatId);
+    // Токен НЕ заполняем в input — он замаскирован звёздочками, а placeholder покажет статус
+    if(d.tgTokenSet){document.getElementById('tg-token').placeholder='Токен задан (оставьте пустым чтобы не менять)';}
+    setV('tg-chatid',d.tgChatId);
     if(d.tgReportInt!==undefined) setV('tg-report-int',d.tgReportInt);
     if(d.alertDelta) setText('tg-thresh',d.alertDelta+' кг');
     selWm(parseInt(d.wifiMode||0),true);
@@ -1285,7 +1287,7 @@ static String _maskSecret(const char *src) {
 static String _uptime() {
   unsigned long s = millis() / 1000UL;
   char buf[16];
-  snprintf(buf, sizeof(buf), "%lud %02lu:%02lu:%02lu",
+  snprintf(buf, sizeof(buf), "%lud%02lu:%02lu:%02lu",
            s/86400, (s%86400)/3600, (s%3600)/60, s%60);
   return String(buf);
 }
@@ -1728,10 +1730,22 @@ static void _handleDayStat() {
     (month >= 9 && month <= 11) ? "Osen"  : "Zima";
   doc["season"] = season;
 
-  // Дней наблюдений: всего строк / записей в день (из суточной статистики)
-  size_t logSz = log_size();
-  int totalRows = (logSz > 50) ? (int)((logSz - 50) / 50) : 0;  // ~50 байт/строка, минус заголовок
-  doc["daysSinceStart"] = (ds.count > 0) ? (totalRows / ds.count) : (totalRows > 0 ? 1 : 0);
+  // Дней наблюдений: разница между текущей и первой датой лога
+  {
+    char firstDate[12];
+    int days = 0;
+    if (log_first_date(firstDate, sizeof(firstDate)) && date.length() >= 10) {
+      // firstDate = "DD.MM.YYYY", date = "DD.MM.YYYY"
+      int d1 = atoi(firstDate);      int m1 = atoi(firstDate + 3);  int y1 = atoi(firstDate + 6);
+      int d2 = atoi(date.c_str());   int m2 = atoi(date.c_str()+3); int y2 = atoi(date.c_str()+6);
+      // Простая формула: дни от epoch (достаточно точная для разности)
+      long e1 = (long)y1*365 + y1/4 - y1/100 + y1/400 + (m1*306+5)/10 + d1;
+      long e2 = (long)y2*365 + y2/4 - y2/100 + y2/400 + (m2*306+5)/10 + d2;
+      days = (int)(e2 - e1);
+      if (days < 0) days = 0;
+    }
+    doc["daysSinceStart"] = days > 0 ? days : (log_size() > 100 ? 1 : 0);
+  }
 
   // Последнее значительное изменение — дельта текущий - опорный
   doc["deltaKg"] = *_wd.weight - *_wd.prevWeight;
@@ -1817,13 +1831,14 @@ static String _buildBackupJson(bool masked) {
 static void _handleBackup() {
   if (!_auth()) return;
   _activity();
-  // GET отдаёт файл с полными секретами (для скачивания бэкапа)
-  String json = _buildBackupJson(false);
+  // GET отдаёт маскированные секреты (TG-токен, WiFi-пароль, AP-пароль)
+  // Полные секреты сохраняются только на SD/LittleFS (локально на устройстве)
+  String json = _buildBackupJson(true);
   _srv.sendHeader("Content-Disposition", "attachment; filename=\"beehive_backup.json\"");
   _srv.send(200, "application/json", json);
 
-  // Авто-сохранение на SD/LittleFS
-  log_save_backup(json);
+  // Авто-сохранение на SD/LittleFS — полные секреты (только локально)
+  log_save_backup(_buildBackupJson(false));
 }
 
 // ─── /api/backup/restore  POST — восстановление из JSON бэкапа ───────────
@@ -1951,11 +1966,7 @@ void webserver_init(WebData &data, WebActions &actions) {
   Serial.print(F("[WebServer] Started on port "));
   Serial.print(WEB_SERVER_PORT);
   Serial.print(F("  http://"));
-#if defined(WIFI_MODE_AP)
-  Serial.println(WiFi.softAPIP());
-#else
-  Serial.println(WiFi.localIP());
-#endif
+  Serial.println(get_wifi_mode() == 0 ? WiFi.softAPIP() : WiFi.localIP());
 }
 
 void webserver_handle() {

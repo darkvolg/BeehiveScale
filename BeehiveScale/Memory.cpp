@@ -404,6 +404,8 @@ uint32_t get_tg_report_interval_min() {
 }
 
 void set_tg_report_interval_min(uint32_t minutes) {
+  // Валидация: 0=откл, или 60..10080 мин. Отклоняем невалидные значения.
+  if (minutes != 0 && (minutes < 60 || minutes > 10080)) return;
   _tgReportIntervalMin = minutes;
   byte magic = EEPROM_MAGIC_TG_RPT_VALUE;
   EEPROM.put(EEPROM_ADDR_TG_REPORT_MAGIC, magic);

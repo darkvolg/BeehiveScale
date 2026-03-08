@@ -28,6 +28,8 @@ String   log_to_json(int maxRows = 200);
 // Стримит CSV только за указанную дату (формат: "DD.MM.YYYY") прямо в поток
 // Возвращает кол-во строк; если date пустая — возвращает весь файл
 size_t   log_stream_csv_date(Stream &out, const String &date);
+// Первая дата в логе (DD.MM.YYYY) — для подсчёта дней наблюдений
+bool     log_first_date(char *buf, size_t bufLen);
 // Суточная статистика: min/max вес и температура за сегодня
 struct DayStat {
   float wMin, wMax, tMin, tMax;

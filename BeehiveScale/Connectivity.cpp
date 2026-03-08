@@ -263,7 +263,7 @@ static bool _tg_post(const char* message) {
   HTTPClient http;
   http.setTimeout(HTTP_TIMEOUT_MS);
 
-  char url[128];
+  char url[160];
   snprintf(url, sizeof(url), "https://%s/bot%s/sendMessage", TG_HOST, useToken);
 
 #if defined(ESP8266)
