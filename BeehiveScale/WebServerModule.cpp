@@ -1706,8 +1706,24 @@ static void _handleDayStat() {
   _keepalive();  // GET-поллинг — не сбрасывать подсветку
   // Дата из параметра или текущая из RTC
   String date = _srv.arg("date");
+  // Санитизация: только цифры, '-' и '.', длина ≤10 (защита от инъекций)
+  if (date.length() > 0) {
+    if (date.length() > 10) date = date.substring(0, 10);
+    for (unsigned int i = 0; i < date.length(); i++) {
+      char ch = date[i];
+      if (!isdigit(ch) && ch != '-' && ch != '.') {
+        _srv.send(400, "text/plain", "Bad date");
+        return;
+      }
+    }
+  }
   if (date.length() == 0) date = *_wd.datetime;  // "DD.MM.YYYY HH:MM:SS" → берём первые 10
   if (date.length() > 10) date = date.substring(0, 10);
+  // Нормализация: YYYY-MM-DD → DD.MM.YYYY (единый формат для season/days/log_day_stat)
+  if (date.length() == 10 && date.charAt(4) == '-') {
+    // "YYYY-MM-DD" → "DD.MM.YYYY"
+    date = date.substring(8, 10) + "." + date.substring(5, 7) + "." + date.substring(0, 4);
+  }
 
   DayStat ds = log_day_stat(date);
 
@@ -1721,9 +1737,9 @@ static void _handleDayStat() {
   doc["count"]  = ds.count;
 
   // Фича 17: информация об улье
-  // Сезон по месяцу
+  // Сезон по месяцу (date уже нормализован к DD.MM.YYYY)
   int month = 0;
-  if (date.length() >= 7) month = date.substring(3, 5).toInt();  // "DD.MM.YYYY"
+  if (date.length() >= 7) month = date.substring(3, 5).toInt();
   const char* season =
     (month >= 3 && month <= 5)  ? "Vesna" :
     (month >= 6 && month <= 8)  ? "Leto"  :
@@ -1731,14 +1747,13 @@ static void _handleDayStat() {
   doc["season"] = season;
 
   // Дней наблюдений: разница между текущей и первой датой лога
+  // Обе даты в формате DD.MM.YYYY после нормализации
   {
     char firstDate[12];
     int days = 0;
     if (log_first_date(firstDate, sizeof(firstDate)) && date.length() >= 10) {
-      // firstDate = "DD.MM.YYYY", date = "DD.MM.YYYY"
       int d1 = atoi(firstDate);      int m1 = atoi(firstDate + 3);  int y1 = atoi(firstDate + 6);
       int d2 = atoi(date.c_str());   int m2 = atoi(date.c_str()+3); int y2 = atoi(date.c_str()+6);
-      // Простая формула: дни от epoch (достаточно точная для разности)
       long e1 = (long)y1*365 + y1/4 - y1/100 + y1/400 + (m1*306+5)/10 + d1;
       long e2 = (long)y2*365 + y2/4 - y2/100 + y2/400 + (m2*306+5)/10 + d2;
       days = (int)(e2 - e1);
@@ -1772,7 +1787,7 @@ static void _handleLogJson() {
 
 // ─── /api/backup  GET — полный бэкап настроек EEPROM ──────────────────────
 static String _buildBackupJson(bool masked) {
-  StaticJsonDocument<896> doc;
+  StaticJsonDocument<1024> doc;
   doc["_type"] = "BeehiveScale_backup";
   doc["_ver"]  = "4.1";
 
@@ -1801,27 +1816,26 @@ static String _buildBackupJson(bool masked) {
   }
 
   // AP пароль
-  { char ap[24]; get_ap_pass(ap, sizeof(ap));
-    doc["apPass"] = masked ? _maskSecret(ap) : (const char*)ap;
-  }
+  // НЕ использовать (const char*) каст! ArduinoJson v6 для const char* хранит указатель
+  // (zero-copy), а char* — копирует строку в пул. Каст → dangling pointer после }.
+  char ap[24]; get_ap_pass(ap, sizeof(ap));
+  doc["apPass"] = masked ? _maskSecret(ap) : String(ap);
 
   // Telegram
-  { char tok[50], cid[16];
-    get_tg_token(tok, sizeof(tok));
-    get_tg_chatid(cid, sizeof(cid));
-    doc["tgToken"]  = masked ? _maskSecret(tok) : (const char*)tok;
-    doc["tgChatId"] = cid;
-    doc["tgReportInt"] = get_tg_report_interval_min();
-  }
+  char tok[50], cid[16];
+  get_tg_token(tok, sizeof(tok));
+  get_tg_chatid(cid, sizeof(cid));
+  doc["tgToken"]  = masked ? _maskSecret(tok) : String(tok);
+  doc["tgChatId"] = cid;
+  doc["tgReportInt"] = get_tg_report_interval_min();
 
   // WiFi
   doc["wifiMode"] = (int)get_wifi_mode();
-  { char ss[33], wp[33];
-    get_wifi_ssid(ss, sizeof(ss));
-    get_wifi_sta_pass(wp, sizeof(wp));
-    doc["wifiSsid"] = ss;
-    doc["wifiPass"] = masked ? _maskSecret(wp) : (const char*)wp;
-  }
+  char ss[33], wp[33];
+  get_wifi_ssid(ss, sizeof(ss));
+  get_wifi_sta_pass(wp, sizeof(wp));
+  doc["wifiSsid"] = ss;
+  doc["wifiPass"] = masked ? _maskSecret(wp) : String(wp);
 
   String out;
   serializeJson(doc, out);
@@ -1831,14 +1845,14 @@ static String _buildBackupJson(bool masked) {
 static void _handleBackup() {
   if (!_auth()) return;
   _activity();
-  // GET отдаёт маскированные секреты (TG-токен, WiFi-пароль, AP-пароль)
-  // Полные секреты сохраняются только на SD/LittleFS (локально на устройстве)
-  String json = _buildBackupJson(true);
-  _srv.sendHeader("Content-Disposition", "attachment; filename=\"beehive_backup.json\"");
-  _srv.send(200, "application/json", json);
-
-  // Авто-сохранение на SD/LittleFS — полные секреты (только локально)
+  // Сначала сохраняем полный бэкап на SD (с секретами), потом отправляем маскированный.
+  // Так два больших String не сосуществуют в heap одновременно.
   log_save_backup(_buildBackupJson(false));
+  {
+    String json = _buildBackupJson(true);
+    _srv.sendHeader("Content-Disposition", "attachment; filename=\"beehive_backup.json\"");
+    _srv.send(200, "application/json", json);
+  }
 }
 
 // ─── /api/backup/restore  POST — восстановление из JSON бэкапа ───────────
@@ -1847,7 +1861,7 @@ static void _handleBackupRestore() {
   _activity();
   if (_srv.method() != HTTP_POST) { _sendJson(false, "Только POST"); return; }
 
-  StaticJsonDocument<896> doc;
+  StaticJsonDocument<1024> doc;
   DeserializationError err = deserializeJson(doc, _srv.arg("plain"));
   if (err) { _sendJson(false, "Ошибка JSON"); return; }
 
@@ -1905,7 +1919,7 @@ static void _handleBackupRestore() {
 
   if (doc.containsKey("sleepSec")) { uint32_t v = doc["sleepSec"].as<uint32_t>(); if (v >= 30 && v <= 86400) { set_sleep_sec(v); restored++; } }
   if (doc.containsKey("lcdBlSec")) { uint16_t v = doc["lcdBlSec"].as<uint16_t>(); if (v <= 3600) { set_lcd_bl_sec(v); restored++; } }
-  if (doc.containsKey("apPass"))   { const char* p = doc["apPass"] | ""; if (strlen(p) >= 8 && strlen(p) <= 23) { set_ap_pass(p); restored++; } }
+  if (doc.containsKey("apPass"))   { const char* p = doc["apPass"] | ""; if (strlen(p) >= 8 && strlen(p) <= 23 && strchr(p, '*') == NULL) { set_ap_pass(p); restored++; } }
   if (doc.containsKey("schedTimes")) {
     JsonArray arr = doc["schedTimes"].as<JsonArray>();
     uint16_t times[8]; uint8_t cnt = 0;
@@ -1928,7 +1942,7 @@ static void _handleBackupRestore() {
   // WiFi
   if (doc.containsKey("wifiMode")) { uint8_t m = doc["wifiMode"].as<uint8_t>(); if (m <= 1) { set_wifi_mode(m); restored++; } }
   if (doc.containsKey("wifiSsid")) { const char* s = doc["wifiSsid"] | ""; if (strlen(s) > 0) { set_wifi_ssid(s); restored++; } }
-  if (doc.containsKey("wifiPass")) { const char* p = doc["wifiPass"] | ""; if (strlen(p) > 0) { set_wifi_sta_pass(p); restored++; } }
+  if (doc.containsKey("wifiPass")) { const char* p = doc["wifiPass"] | ""; if (strlen(p) > 0 && strchr(p, '*') == NULL) { set_wifi_sta_pass(p); restored++; } }
 
   char msg[48];
   snprintf(msg, sizeof(msg), "Восстановлено %d параметров", restored);

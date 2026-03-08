@@ -184,6 +184,7 @@ void set_sleep_sec(uint32_t sec) {
 
 uint16_t get_lcd_bl_sec() { if (!_extLoaded) ext_settings_init(); return _lcdBlSec; }
 void set_lcd_bl_sec(uint16_t sec) {
+  if (sec > 3600) return;
   _lcdBlSec = sec; _ext_save();
 }
 

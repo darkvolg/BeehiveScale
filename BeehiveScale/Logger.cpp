@@ -19,20 +19,30 @@
 static const char CSV_HEADER[] = "\xEF\xBB\xBF" "datetime;weight_kg;temp_c;humidity_pct;bat_v\n";
 
 // ─── Хелпер: запятая→точка для парсинга CSV с десятичной запятой ─────────
+// Без heap-аллокаций: работает на стековом буфере
+static float commaToFloat(const char *src, size_t len) {
+  char buf[16];
+  if (len == 0 || len >= sizeof(buf)) return 0.0f;
+  for (size_t i = 0; i < len; i++) buf[i] = (src[i] == ',') ? '.' : src[i];
+  buf[len] = '\0';
+  return (float)atof(buf);
+}
+// Обёртка для String (обратная совместимость)
 static float commaToFloat(const String &s) {
-  String tmp = s;
-  tmp.replace(',', '.');
-  return tmp.toFloat();
+  return commaToFloat(s.c_str(), s.length());
 }
 // Замена запятой на точку in-place (без heap-аллокации) для вставки в JSON
 // Записывает результат в buf (maxLen включая '\0'), возвращает buf
-static char* commaToPoint(const String &s, char *buf, size_t maxLen) {
-  size_t len = s.length();
+static char* commaToPoint(const char *src, size_t srcLen, char *buf, size_t maxLen) {
+  size_t len = srcLen;
   if (len >= maxLen) len = maxLen - 1;
-  const char *src = s.c_str();
   for (size_t i = 0; i < len; i++) buf[i] = (src[i] == ',') ? '.' : src[i];
   buf[len] = '\0';
   return buf;
+}
+// Обёртка для String (обратная совместимость)
+static char* commaToPoint(const String &s, char *buf, size_t maxLen) {
+  return commaToPoint(s.c_str(), s.length(), buf, maxLen);
 }
 
 // ─── Внутренние хелперы (абстракция над SD / LittleFS) ──────────────────
@@ -67,6 +77,7 @@ static bool _fs_rename(const char *from, const char *to) {
     while (src.available()) {
       int n = src.read(buf, sizeof(buf));
       if (n > 0) dst.write(buf, n);
+      yield();
     }
     src.close(); dst.close();
     SD.remove(from);
@@ -160,14 +171,19 @@ bool log_init() {
     if (f) { f.print(CSV_HEADER); f.close(); }
   } else {
     // Проверяем заголовок: должен содержать "datetime" и ";" (новый формат).
-    // Файл с BOM начинается с \xEF\xBB\xBF, поэтому indexOf("datetime") вместо startsWith.
-    // Если заголовок в старом формате (запятые) или повреждён — пересоздаём.
+    // Читаем через char-буфер (без readStringUntil — защита от OOM при отсутствии '\n').
     File f = _fs_open_read(LOG_FILE);
     if (f) {
-      String hdr = f.readStringUntil('\n');
+      char hdr[80];
+      int hpos = 0;
+      while (f.available() && hpos < (int)sizeof(hdr) - 1) {
+        int c = f.read();
+        if (c == '\n' || c == '\r' || c < 0) break;
+        hdr[hpos++] = (char)c;
+      }
+      hdr[hpos] = '\0';
       f.close();
-      hdr.trim();
-      bool hdrOk = (hdr.indexOf("datetime") >= 0) && (hdr.indexOf(';') >= 0);
+      bool hdrOk = (strstr(hdr, "datetime") != NULL) && (strchr(hdr, ';') != NULL);
       if (!hdrOk) {
         Serial.println(F("[Log] Header outdated/invalid — recreating log"));
         File fw = _fs_open_write(LOG_FILE);
@@ -461,14 +477,23 @@ bool log_first_date(char *buf, size_t bufLen) {
   if (bufLen < 11 || !_fs_ok() || !_fs_exists(LOG_FILE)) return false;
   File f = _fs_open_read(LOG_FILE);
   if (!f) return false;
-  f.readStringUntil('\n');  // пропустить заголовок
+  // пропустить заголовок
+  while (f.available()) { int c = f.read(); if (c == '\n' || c < 0) break; }
+  char ln[48];
   while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (line.length() < 10) continue;
-    if (line.startsWith("datetime") || line.indexOf("weight_kg") >= 0) continue;
+    int pos = 0;
+    while (f.available()) {
+      int c = f.read();
+      if (c == '\n' || c == '\r' || c < 0) break;
+      if (pos < (int)sizeof(ln) - 1) ln[pos++] = (char)c;
+    }
+    ln[pos] = '\0';
+    // trim trailing spaces
+    while (pos > 0 && ln[pos - 1] == ' ') ln[--pos] = '\0';
+    if (pos < 10) continue;
+    if (strstr(ln, "datetime") || strstr(ln, "weight_kg")) continue;
     // Первые 10 символов = "DD.MM.YYYY"
-    memcpy(buf, line.c_str(), 10);
+    memcpy(buf, ln, 10);
     buf[10] = '\0';
     f.close();
     return true;
@@ -478,6 +503,7 @@ bool log_first_date(char *buf, size_t bufLen) {
 }
 
 // ─── Фича 12: суточная статистика min/max вес и температура ──────────────
+// Парсинг CSV на char-буфере (без String аллокаций в цикле — защита от heap-фрагментации)
 DayStat log_day_stat(const String &todayDate) {
   DayStat s;
   s.wMin = 1e9f; s.wMax = -1e9f;
@@ -488,42 +514,67 @@ DayStat log_day_stat(const String &todayDate) {
   File f = _fs_open_read(LOG_FILE);
   if (!f) return s;
 
-  // Нормализуем дату к "DD.MM.YYYY"
-  String cmpDate = todayDate;
-  if (todayDate.length() == 10 && todayDate.charAt(4) == '-') {
-    cmpDate = todayDate.substring(8,10) + "." + todayDate.substring(5,7) + "." + todayDate.substring(0,4);
+  // Нормализуем дату к "DD.MM.YYYY" один раз
+  char cmpDate[12] = {0};
+  bool hasFilter = (todayDate.length() >= 10);
+  if (hasFilter) {
+    if (todayDate.charAt(4) == '-') {
+      snprintf(cmpDate, sizeof(cmpDate), "%.2s.%.2s.%.4s",
+               todayDate.c_str()+8, todayDate.c_str()+5, todayDate.c_str());
+    } else {
+      memcpy(cmpDate, todayDate.c_str(), 10);
+      cmpDate[10] = '\0';
+    }
   }
 
-  f.readStringUntil('\n');  // пропустить заголовок
+  // Побайтовое чтение — без readStringUntil / String в цикле
+  char buf[128];
+  int pos = 0;
+  bool headerSkipped = false;
+
   while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) continue;
-    // Пропускаем повторные заголовки
-    if (line.startsWith("datetime") || line.indexOf("weight_kg") >= 0) continue;
-    // Фильтр по дате
-    if (cmpDate.length() > 0 && !line.startsWith(cmpDate)) continue;
+    int c = f.read();
+    if (c < 0) break;
+    if (c == '\n' || c == '\r') {
+      if (pos == 0) continue;
+      buf[pos] = '\0';
+      if (!headerSkipped) { headerSkipped = true; pos = 0; continue; }
 
-    int c1 = line.indexOf(';');
-    if (c1 < 0) continue;
-    int c2 = line.indexOf(';', c1+1);
-    if (c2 < 0) continue;
-    int c3 = line.indexOf(';', c2+1);
-    if (c3 < 0) continue;
+      // Пропускаем повторные заголовки
+      if (pos > 8 && memcmp(buf, "datetime", 8) == 0) { pos = 0; continue; }
 
-    float w = commaToFloat(line.substring(c1+1, c2));
-    String tStr = line.substring(c2+1, c3);
-    float t = (tStr.length() == 0) ? -99.0f : commaToFloat(tStr);
+      // Фильтр по дате: первые 10 символов
+      if (hasFilter && (pos < 10 || memcmp(buf, cmpDate, 10) != 0)) { pos = 0; continue; }
 
-    if (isnan(w) || w < -5.0f || w > 500.0f) continue;
+      // Парсим поля: datetime;weight;temp;...
+      // Находим разделители ';'
+      int c1 = -1, c2 = -1, c3 = -1;
+      for (int i = 0; i < pos; i++) {
+        if (buf[i] == ';') {
+          if (c1 < 0) c1 = i;
+          else if (c2 < 0) c2 = i;
+          else if (c3 < 0) { c3 = i; break; }
+        }
+      }
+      if (c1 < 0 || c2 < 0 || c3 < 0) { pos = 0; continue; }
 
-    if (w < s.wMin) s.wMin = w;
-    if (w > s.wMax) s.wMax = w;
-    if (!isnan(t) && t > -90.0f) {
-      if (t < s.tMin) s.tMin = t;
-      if (t > s.tMax) s.tMax = t;
+      float w = commaToFloat(buf + c1 + 1, c2 - c1 - 1);
+      int tLen = c3 - c2 - 1;
+      float t = (tLen <= 0) ? -99.0f : commaToFloat(buf + c2 + 1, tLen);
+
+      if (isnan(w) || w < -5.0f || w > 500.0f) { pos = 0; continue; }
+
+      if (w < s.wMin) s.wMin = w;
+      if (w > s.wMax) s.wMax = w;
+      if (!isnan(t) && t > -90.0f) {
+        if (t < s.tMin) s.tMin = t;
+        if (t > s.tMax) s.tMax = t;
+      }
+      s.count++;
+      pos = 0;
+    } else {
+      if (pos < (int)sizeof(buf) - 1) buf[pos++] = (char)c;
     }
-    s.count++;
   }
   f.close();
 
@@ -533,7 +584,8 @@ DayStat log_day_stat(const String &todayDate) {
 }
 
 // ─── Парсит CSV-лог и возвращает JSON-массив для графика/экспорта ────────
-// Формат CSV: datetime,weight_kg,temp_c,humidity_pct,bat_v
+// Формат CSV: datetime;weight_kg;temp_c;humidity_pct;bat_v
+// Парсинг на char-буфере (без String аллокаций в цикле — защита от heap-фрагментации)
 String log_to_json(int maxRows) {
   // Ограничиваем максимум на ESP8266 — heap ~40 КБ, каждая строка ~80 байт JSON
 #if defined(ESP8266)
@@ -553,8 +605,6 @@ String log_to_json(int maxRows) {
   }
   f.seek(0);
 
-  // Пропускаем заголовок
-  f.readStringUntil('\n');
   int dataLines = totalLines - 1;
   int skipLines = (dataLines > maxRows) ? (dataLines - maxRows) : 0;
 
@@ -565,49 +615,68 @@ String log_to_json(int maxRows) {
   bool first = true;
   int lineIdx = 0;
 
+  // Побайтовое чтение — без readStringUntil / String в цикле
+  char buf[128];
+  int pos = 0;
+  bool headerSkipped = false;
+
   while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) continue;
-    if (lineIdx++ < skipLines) continue;
+    int ch = f.read();
+    if (ch < 0) break;
+    if (ch == '\n' || ch == '\r') {
+      if (pos == 0) continue;
+      buf[pos] = '\0';
 
-    // Пропускаем повторные заголовки (могут появиться после ротации/перезагрузки)
-    if (line.startsWith("datetime") || line.indexOf("weight_kg") >= 0) continue;
+      if (!headerSkipped) { headerSkipped = true; pos = 0; continue; }
+      if (lineIdx++ < skipLines) { pos = 0; continue; }
 
-    // Парсим: datetime;weight;temp;hum;batV
-    int c1 = line.indexOf(';');
-    if (c1 < 0) continue;
-    int c2 = line.indexOf(';', c1+1);
-    if (c2 < 0) continue;
-    int c3 = line.indexOf(';', c2+1);
-    if (c3 < 0) continue;
-    int c4 = line.indexOf(';', c3+1);
-    if (c4 < 0) continue;
+      // Пропускаем повторные заголовки
+      if (pos > 8 && memcmp(buf, "datetime", 8) == 0) { pos = 0; continue; }
+      // Также пропускаем строки с BOM + "datetime" (после ротации)
+      if (pos > 11 && memcmp(buf, "\xEF\xBB\xBF" "datetime", 11) == 0) { pos = 0; continue; }
 
-    String dt  = line.substring(0, c1);
-    String wgt = line.substring(c1+1, c2);
-    String tmp = line.substring(c2+1, c3);
-    String hum = line.substring(c3+1, c4);
-    String bat = line.substring(c4+1);
+      // Находим 4 разделителя ';'
+      int s1 = -1, s2 = -1, s3 = -1, s4 = -1;
+      for (int i = 0; i < pos; i++) {
+        if (buf[i] == ';') {
+          if      (s1 < 0) s1 = i;
+          else if (s2 < 0) s2 = i;
+          else if (s3 < 0) s3 = i;
+          else if (s4 < 0) { s4 = i; break; }
+        }
+      }
+      if (s1 < 0 || s2 < 0 || s3 < 0 || s4 < 0) { pos = 0; continue; }
 
-    // Пункт 6: пропускаем невалидные строки при чтении
-    float w = commaToFloat(wgt);
-    if (isnan(w) || isinf(w) || w < -5.0f || w > 500.0f) continue;
+      // Поля: dt=[0..s1), w=[s1+1..s2), t=[s2+1..s3), h=[s3+1..s4), b=[s4+1..pos)
+      int wLen = s2 - s1 - 1;
+      int tLen = s3 - s2 - 1;
+      int hLen = s4 - s3 - 1;
+      int bLen = pos - s4 - 1;
 
-    char cb[16];  // общий буфер для commaToPoint (макс длина числа ~12 символов)
-    if (!first) out += ',';
-    out += F("{\"dt\":\"");
-    out += dt;
-    out += F("\",\"w\":");
-    out += commaToPoint(wgt, cb, sizeof(cb));
-    out += F(",\"t\":");
-    if (tmp.length() == 0) out += F("-99"); else out += commaToPoint(tmp, cb, sizeof(cb));
-    out += F(",\"h\":");
-    if (hum.length() == 0) out += F("-99"); else out += commaToPoint(hum, cb, sizeof(cb));
-    out += F(",\"b\":");
-    out += commaToPoint(bat, cb, sizeof(cb));
-    out += '}';
-    first = false;
+      // Валидация веса
+      float w = commaToFloat(buf + s1 + 1, wLen);
+      if (isnan(w) || isinf(w) || w < -5.0f || w > 500.0f) { pos = 0; continue; }
+
+      // Строим JSON-объект
+      char cb[16];
+      if (!first) out += ',';
+      out += F("{\"dt\":\"");
+      // dt = buf[0..s1)
+      { char saveCh = buf[s1]; buf[s1] = '\0'; out += buf; buf[s1] = saveCh; }
+      out += F("\",\"w\":");
+      out += commaToPoint(buf + s1 + 1, wLen, cb, sizeof(cb));
+      out += F(",\"t\":");
+      if (tLen <= 0) out += F("-99"); else out += commaToPoint(buf + s2 + 1, tLen, cb, sizeof(cb));
+      out += F(",\"h\":");
+      if (hLen <= 0) out += F("-99"); else out += commaToPoint(buf + s3 + 1, hLen, cb, sizeof(cb));
+      out += F(",\"b\":");
+      if (bLen <= 0) out += F("0"); else out += commaToPoint(buf + s4 + 1, bLen, cb, sizeof(cb));
+      out += '}';
+      first = false;
+      pos = 0;
+    } else {
+      if (pos < (int)sizeof(buf) - 1) buf[pos++] = (char)ch;
+    }
   }
   f.close();
   out += ']';
