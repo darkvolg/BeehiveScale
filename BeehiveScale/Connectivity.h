@@ -4,7 +4,7 @@
 #include <Arduino.h>
 
 // ─── Настройки Wi-Fi ──────────────────────────────────────────────────────
-#define WIFI_SSID        "Beeline"
+#define WIFI_SSID        "YOUR_WIFI_SSID"
 #define WIFI_PASSWORD    "YOUR_WIFI_PASSWORD"
 #define WIFI_TIMEOUT_MS  10000UL
 

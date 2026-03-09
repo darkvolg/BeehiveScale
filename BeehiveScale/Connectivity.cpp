@@ -221,11 +221,36 @@ void queue_process() {
   Serial.print(F("[Queue] Processing items: ")); Serial.println(count);
 
   // Читаем и отправляем по одному элементу — без выделения heap под весь массив
-  for (size_t i = 0; i < count; i++) {
+  size_t sent = 0;
+  size_t maxSend = (count > 5) ? 5 : count;
+  for (size_t i = 0; i < maxSend; i++) {
     UnsentData item;
     if (f.read((uint8_t*)&item, sizeof(UnsentData)) != sizeof(UnsentData)) break;
     Serial.print(F("[Queue] Sending item ")); Serial.println(i+1);
-    ts_send(item.weight, item.temp, item.hum, item.rtcTemp);
+    if (!ts_send(item.weight, item.temp, item.hum, item.rtcTemp)) {
+      Serial.println(F("[Queue] Send failed, saving remaining"));
+      // Сохраняем оставшиеся записи (текущую + последующие)
+      File tmp = LittleFS.open("/queue_tmp.bin", "w");
+      if (tmp) {
+        tmp.write((uint8_t*)&item, sizeof(UnsentData));
+        while (f.available()) {
+          UnsentData rem;
+          if (f.read((uint8_t*)&rem, sizeof(UnsentData)) == sizeof(UnsentData))
+            tmp.write((uint8_t*)&rem, sizeof(UnsentData));
+        }
+        tmp.close();
+      }
+      f.close();
+      LittleFS.remove(QUEUE_FILE);
+      if (LittleFS.exists("/queue_tmp.bin")) {
+        if (!LittleFS.rename("/queue_tmp.bin", QUEUE_FILE)) {
+          Serial.println(F("[Queue] Rename failed, keeping tmp"));
+        }
+      }
+      Serial.print(F("[Queue] Sent ")); Serial.print(sent); Serial.println(F(" items"));
+      return;
+    }
+    sent++;
     delay(500);
 #if defined(ESP8266)
     ESP.wdtFeed();
@@ -233,6 +258,25 @@ void queue_process() {
     // tg_send_report НЕ вызывается из очереди: очередь только для ThingSpeak.
     // TG-отчёты управляются отдельным таймером TG_REPORT_INTERVAL.
     yield();
+  }
+  // Save remaining items if we only processed a subset
+  if (maxSend < count && f.available()) {
+    File tmp = LittleFS.open("/queue_tmp.bin", "w");
+    if (tmp) {
+      while (f.available()) {
+        UnsentData rem;
+        if (f.read((uint8_t*)&rem, sizeof(UnsentData)) == sizeof(UnsentData))
+          tmp.write((uint8_t*)&rem, sizeof(UnsentData));
+      }
+      tmp.close();
+    }
+    f.close();
+    LittleFS.remove(QUEUE_FILE);
+    if (LittleFS.exists("/queue_tmp.bin"))
+      LittleFS.rename("/queue_tmp.bin", QUEUE_FILE);
+    Serial.print(F("[Queue] Partial: sent ")); Serial.print(sent);
+    Serial.print(F(" of ")); Serial.println(count);
+    return;
   }
   f.close();
   LittleFS.remove(QUEUE_FILE);
@@ -243,8 +287,8 @@ static bool _tg_post(const char* message) {
   if (!_wifi_active()) return false;
 
   // Приоритет: EEPROM-настройки → хардкод из Connectivity.h
-  char tgToken[50];
-  char tgChatId[16];
+  char tgToken[50] = {0};
+  char tgChatId[16] = {0};
   get_tg_token(tgToken, sizeof(tgToken));
   get_tg_chatid(tgChatId, sizeof(tgChatId));
 
@@ -273,11 +317,11 @@ static bool _tg_post(const char* message) {
 #endif
   http.addHeader("Content-Type", "application/json");
 
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<256> doc;
   doc["chat_id"] = useChatId;
   doc["text"] = message;
   doc["parse_mode"] = "HTML";
-  char body[512];
+  char body[384];
   serializeJson(doc, body, sizeof(body));
 
   int code = http.POST(body);
@@ -467,7 +511,12 @@ bool ntp_sync_time() {
 void ntp_loop() {
   if (!_ntpInitialized) {
     _ntpInitialized = true;
-    _lastNtpSync = millis();
+    if (!ntp_sync_time()) {
+      // При неудаче — повтор через 1 мин вместо NTP_SYNC_INTERVAL (1 час)
+      _lastNtpSync = millis() - NTP_SYNC_INTERVAL + 60000UL;
+    } else {
+      _lastNtpSync = millis();
+    }
     return;
   }
 
@@ -475,9 +524,11 @@ void ntp_loop() {
     Serial.println(F("[NTP] Periodic sync..."));
     if (ntp_sync_time()) {
       Serial.println(F("[NTP] Sync OK"));
+      _lastNtpSync = millis();
     } else {
       Serial.println(F("[NTP] Sync failed"));
+      // Повтор через 2 мин вместо полного интервала
+      _lastNtpSync = millis() - NTP_SYNC_INTERVAL + 120000UL;
     }
-    _lastNtpSync = millis();
   }
 }

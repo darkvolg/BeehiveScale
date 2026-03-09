@@ -23,6 +23,10 @@ TimeStamp rtc_now() {
   if (!_rtcOk) return ts;
 
   DateTime dt = _rtc.now();
+  if (dt.year() < 2020 || dt.year() > 2099) {
+    ts.valid = false;
+    return ts;
+  }
   ts.year   = dt.year();
   ts.month  = dt.month();
   ts.day    = dt.day();
@@ -34,6 +38,10 @@ TimeStamp rtc_now() {
 
 bool rtc_set(uint16_t y, uint8_t mo, uint8_t d, uint8_t h, uint8_t mi, uint8_t s) {
   if (!_rtcOk) return false;
+  if (y < 2020 || y > 2099) return false;
+  if (mo < 1 || mo > 12) return false;
+  if (d < 1 || d > 31) return false;
+  if (h > 23 || mi > 59 || s > 59) return false;
   _rtc.adjust(DateTime(y, mo, d, h, mi, s));
   return true;
 }

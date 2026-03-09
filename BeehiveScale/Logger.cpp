@@ -74,12 +74,20 @@ static bool _fs_rename(const char *from, const char *to) {
     File dst = SD.open(to, FILE_WRITE);
     if (!dst) { src.close(); return false; }
     uint8_t buf[256];
+    size_t totalRead = 0, totalWritten = 0;
     while (src.available()) {
       int n = src.read(buf, sizeof(buf));
-      if (n > 0) dst.write(buf, n);
+      if (n > 0) {
+        totalRead += n;
+        totalWritten += dst.write(buf, n);
+      }
       yield();
     }
     src.close(); dst.close();
+    if (totalRead != totalWritten) {
+      SD.remove(to);  // удалить неполную копию, сохранить оригинал
+      return false;
+    }
     SD.remove(from);
     return true;
   }
@@ -100,7 +108,10 @@ static File _fs_open_read(const char *path) {
 
 static File _fs_open_write(const char *path) {
 #ifdef USE_SD_CARD
-  if (!_fallback) return SD.open(path, FILE_WRITE);
+  if (!_fallback) {
+    SD.remove(path);  // ESP8266 SD: FILE_WRITE = append, need explicit remove for truncate
+    return SD.open(path, FILE_WRITE);
+  }
   return LittleFS.open(path, "w");
 #else
   return LittleFS.open(path, "w");
@@ -307,11 +318,14 @@ void log_append(const String &datetime, float weight, float tempC,
       strncpy(arcName, LOG_FILE_OLD, sizeof(arcName));
     }
     if (_fs_exists(arcName)) _fs_remove(arcName);
-    _fs_rename(LOG_FILE, arcName);
-    File fn = _fs_open_write(LOG_FILE);
-    if (fn) { fn.print(CSV_HEADER); fn.close(); }
-    Serial.print(F("[Log] Rotated → "));
-    Serial.println(arcName);
+    if (!_fs_rename(LOG_FILE, arcName)) {
+      Serial.println(F("[Log] Rename FAILED, skip rotation"));
+    } else {
+      File fn = _fs_open_write(LOG_FILE);
+      if (fn) { fn.print(CSV_HEADER); fn.close(); }
+      Serial.print(F("[Log] Rotated → "));
+      Serial.println(arcName);
+    }
   }
 
   File f = _fs_open_append(LOG_FILE);
@@ -348,6 +362,37 @@ void log_clear() {
   if (!_fs_ok()) return;
   if (_fs_exists(LOG_FILE))     _fs_remove(LOG_FILE);
   if (_fs_exists(LOG_FILE_OLD)) _fs_remove(LOG_FILE_OLD);
+  // Удаляем ротированные архивы /log_YYMMDD_HHMM.csv
+#ifdef USE_SD_CARD
+  if (!_fallback) {
+    File root = SD.open("/");
+    if (root) {
+      File entry;
+      while ((entry = root.openNextFile())) {
+        const char* n = entry.name();
+        const char* base = (n && n[0] == '/') ? n+1 : n;
+        if (base && strncmp(base, "log_", 4) == 0) {
+          int len = strlen(base);
+          if (len > 4 && strcmp(base + len - 4, ".csv") == 0) {
+            char path[32]; snprintf(path, sizeof(path), "/%s", base);
+            entry.close(); SD.remove(path); continue;
+          }
+        }
+        entry.close();
+      }
+      root.close();
+    }
+  } else
+#endif
+  {
+    Dir dir = LittleFS.openDir("/");
+    while (dir.next()) {
+      String fn = dir.fileName();
+      if (fn.startsWith("log_") && fn.endsWith(".csv")) {
+        LittleFS.remove("/" + fn);
+      }
+    }
+  }
   File f = _fs_open_write(LOG_FILE);
   if (f) { f.print(CSV_HEADER); f.close(); }
   Serial.println(F("[Log] Cleared"));
@@ -478,12 +523,14 @@ bool log_first_date(char *buf, size_t bufLen) {
   File f = _fs_open_read(LOG_FILE);
   if (!f) return false;
   // пропустить заголовок
-  while (f.available()) { int c = f.read(); if (c == '\n' || c < 0) break; }
+  int byteCount = 0;
+  while (f.available()) { int c = f.read(); if ((++byteCount & 1023) == 0) yield(); if (c == '\n' || c < 0) break; }
   char ln[48];
   while (f.available()) {
     int pos = 0;
     while (f.available()) {
       int c = f.read();
+      if ((++byteCount & 1023) == 0) yield();
       if (c == '\n' || c == '\r' || c < 0) break;
       if (pos < (int)sizeof(ln) - 1) ln[pos++] = (char)c;
     }
@@ -531,10 +578,12 @@ DayStat log_day_stat(const String &todayDate) {
   char buf[128];
   int pos = 0;
   bool headerSkipped = false;
+  int byteCount = 0;
 
   while (f.available()) {
     int c = f.read();
     if (c < 0) break;
+    if ((++byteCount & 1023) == 0) yield();
     if (c == '\n' || c == '\r') {
       if (pos == 0) continue;
       buf[pos] = '\0';
@@ -576,6 +625,37 @@ DayStat log_day_stat(const String &todayDate) {
       if (pos < (int)sizeof(buf) - 1) buf[pos++] = (char)c;
     }
   }
+  // Process last line without trailing newline
+  if (pos > 0 && headerSkipped) {
+    buf[pos] = '\0';
+    // Skip repeated headers
+    if (!(pos > 8 && memcmp(buf, "datetime", 8) == 0)) {
+      if (!hasFilter || (pos >= 10 && memcmp(buf, cmpDate, 10) == 0)) {
+        int c1 = -1, c2 = -1, c3 = -1;
+        for (int i = 0; i < pos; i++) {
+          if (buf[i] == ';') {
+            if (c1 < 0) c1 = i;
+            else if (c2 < 0) c2 = i;
+            else if (c3 < 0) { c3 = i; break; }
+          }
+        }
+        if (c1 >= 0 && c2 >= 0 && c3 >= 0) {
+          float w = commaToFloat(buf + c1 + 1, c2 - c1 - 1);
+          int tLen = c3 - c2 - 1;
+          float t = (tLen <= 0) ? -99.0f : commaToFloat(buf + c2 + 1, tLen);
+          if (!isnan(w) && w >= -5.0f && w <= 500.0f) {
+            if (w < s.wMin) s.wMin = w;
+            if (w > s.wMax) s.wMax = w;
+            if (!isnan(t) && t > -90.0f) {
+              if (t < s.tMin) s.tMin = t;
+              if (t > s.tMax) s.tMax = t;
+            }
+            s.count++;
+          }
+        }
+      }
+    }
+  }
   f.close();
 
   if (s.count > 0) s.valid = true;
@@ -589,7 +669,7 @@ DayStat log_day_stat(const String &todayDate) {
 String log_to_json(int maxRows) {
   // Ограничиваем максимум на ESP8266 — heap ~40 КБ, каждая строка ~80 байт JSON
 #if defined(ESP8266)
-  if (maxRows > 100) maxRows = 100;
+  if (maxRows > 50) maxRows = 50;
 #else
   if (maxRows > 200) maxRows = 200;
 #endif
@@ -600,8 +680,12 @@ String log_to_json(int maxRows) {
   // Считаем строки чтобы пропустить лишние
   int totalLines = 0;
   while (f.available()) {
-    char c = f.read();
-    if (c == '\n') totalLines++;
+    int c = f.read();
+    if (c < 0) break;
+    if (c == '\n') {
+      totalLines++;
+      if ((totalLines & 63) == 0) yield();  // WDT safe: yield каждые 64 строки
+    }
   }
   f.seek(0);
 
@@ -611,7 +695,7 @@ String log_to_json(int maxRows) {
   String out = "[";
   // Pre-allocate: ~80 байт JSON на строку, снижает фрагментацию heap на ESP8266
   int rows = (dataLines < 0) ? 0 : (dataLines < maxRows ? dataLines : maxRows);
-  out.reserve(2 + rows * 80);
+  if (!out.reserve(2 + rows * 80)) { f.close(); return "[]"; }
   bool first = true;
   int lineIdx = 0;
 
@@ -628,12 +712,11 @@ String log_to_json(int maxRows) {
       buf[pos] = '\0';
 
       if (!headerSkipped) { headerSkipped = true; pos = 0; continue; }
-      if (lineIdx++ < skipLines) { pos = 0; continue; }
 
-      // Пропускаем повторные заголовки
+      // Пропускаем повторные заголовки (до lineIdx, чтобы не влияли на skipLines)
       if (pos > 8 && memcmp(buf, "datetime", 8) == 0) { pos = 0; continue; }
-      // Также пропускаем строки с BOM + "datetime" (после ротации)
       if (pos > 11 && memcmp(buf, "\xEF\xBB\xBF" "datetime", 11) == 0) { pos = 0; continue; }
+      if (lineIdx++ < skipLines) { pos = 0; continue; }
 
       // Находим 4 разделителя ';'
       int s1 = -1, s2 = -1, s3 = -1, s4 = -1;
@@ -699,6 +782,13 @@ String log_read_backup() {
   if (!_fs_ok() || !_fs_exists(BACKUP_FILE)) return "";
   File f = _fs_open_read(BACKUP_FILE);
   if (!f) return "";
+  // Защита от OOM: backup JSON не может быть больше ~2KB
+  size_t sz = f.size();
+  if (sz > 4096) {
+    f.close();
+    Serial.println(F("[Log] Backup file too large, skipping read"));
+    return "";
+  }
   String json = f.readString();
   f.close();
   return json;

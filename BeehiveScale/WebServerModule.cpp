@@ -723,7 +723,7 @@ function toast(msg, err) {
 
 // ── API ───────────────────────────────────────────────────────────────
 function doApi(url) {
-  const method = (url.includes('/data')||(url.includes('/log')&&!url.includes('/clear'))||url.includes('/config')||url.includes('/daystat')||url.includes('/backup')) ? 'GET' : 'POST';
+  const method = (url.includes('/data')||(url.includes('/log')&&!url.includes('/clear'))||url.includes('/config')||url.includes('/daystat')||url.endsWith('/backup')) ? 'GET' : 'POST';
   return fetch(url,{method}).then(r=>r.json()).then(d=>{
     toast(d.msg||(d.ok?'OK':'Ошибка'), !d.ok); return d;
   }).catch(()=>toast('Нет связи',true));
@@ -1057,7 +1057,7 @@ function exportExcel(){
   if(typeof XLSX==='undefined'){
     const s=document.createElement('script');
     s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-    s.onload=_doExcel; document.head.appendChild(s);
+    s.onload=_doExcel; s.onerror=()=>toast('Excel недоступен (нет интернета/AP режим)',true); document.head.appendChild(s);
   } else _doExcel();
 }
 function _doExcel(){
@@ -1316,13 +1316,14 @@ static inline void _keepalive() {
 static void _sendProgmemChunked(const char *pgm) {
   _srv.setContentLength(CONTENT_LENGTH_UNKNOWN);
   _srv.send(200, "text/html; charset=utf-8", "");
-  size_t total = sizeof(PAGE_HTML) - 1;
+  size_t total = strlen_P(pgm);
   size_t sent = 0;
-  char chunk[1024];
+  char chunk[512];
   while (sent < total) {
     size_t n = min((size_t)sizeof(chunk), total - sent);
     memcpy_P(chunk, pgm + sent, n);
     _srv.sendContent(chunk, n);
+    yield();
     sent += n;
   }
 }
@@ -1336,6 +1337,7 @@ static void _handleRoot() {
 // ─── /api/config  GET — начальные значения для форм настроек ─────────────
 static void _handleConfig() {
   if (!_auth()) return;
+  _keepalive();  // GET-поллинг — не сбрасывать таймер авто-сна
   StaticJsonDocument<640> doc;
   doc["alertDelta"]  = web_get_alert_delta();
   doc["calibWeight"] = web_get_calib_weight();
@@ -1343,13 +1345,19 @@ static void _handleConfig() {
   doc["sleepSec"]    = (unsigned long)get_sleep_sec();
   doc["lcdBlSec"]    = (unsigned int)get_lcd_bl_sec();
   doc["wifiMode"]    = (int)get_wifi_mode();
-  { char ss[33]; get_wifi_ssid(ss, sizeof(ss)); doc["wifiSsid"] = ss; }
+  // НЕ использовать block scope для char-буферов + ArduinoJson!
+  // ArduinoJson v6 для char* хранит указатель (zero-copy) — dangling pointer если буфер на стеке.
+  // Оборачиваем в String() чтобы ArduinoJson скопировал содержимое.
+  {
+    char ss[33]; get_wifi_ssid(ss, sizeof(ss));
+    doc["wifiSsid"] = String(ss);
+  }
   {
     char tgTok[50], tgCid[16];
     get_tg_token(tgTok, sizeof(tgTok));
     get_tg_chatid(tgCid, sizeof(tgCid));
     doc["tgToken"]  = _maskSecret(tgTok);
-    doc["tgChatId"] = tgCid;
+    doc["tgChatId"] = String(tgCid);
     doc["tgTokenSet"] = (tgTok[0] != '\0');
     doc["tgReportInt"] = get_tg_report_interval_min();
   }
@@ -1360,7 +1368,7 @@ static void _handleConfig() {
     char tbuf[6];
     for (uint8_t i = 0; i < cnt; i++) {
       snprintf(tbuf, sizeof(tbuf), "%02d:%02d", times[i] / 60, times[i] % 60);
-      arr.add(tbuf);
+      arr.add(String(tbuf));
     }
   }
   String out; serializeJson(doc, out);
@@ -1460,25 +1468,40 @@ static void _handleSettings() {
     }
   }
 
-  // Сохраняем в EEPROM и обновляем кэш в Memory
-  save_web_settings(newAlert, newCalib, newAlpha);
-
-  // Расширенные настройки
+  // Валидация расширенных настроек ДО записи
+  uint32_t newSleepSec = 0; bool hasSleepSec = false;
+  uint16_t newLcdBlSec = 0;  bool hasLcdBlSec = false;
+  const char* newApPass = nullptr;
   if (doc.containsKey("sleepSec")) {
     uint32_t val = doc["sleepSec"].as<uint32_t>();
-    if (val >= 30UL && val <= 86400UL) set_sleep_sec(val);
+    if (val >= 30UL && val <= 86400UL) { newSleepSec = val; hasSleepSec = true; }
     else { _sendJson(false, "sleepSec: 30–86400"); return; }
   }
   if (doc.containsKey("lcdBlSec")) {
     uint16_t val = doc["lcdBlSec"].as<uint16_t>();
-    if (val <= 3600) set_lcd_bl_sec(val);
+    if (val <= 3600) { newLcdBlSec = val; hasLcdBlSec = true; }
     else { _sendJson(false, "lcdBlSec: 0–3600"); return; }
   }
+  static char apPassBuf[24];
   if (doc.containsKey("apPass")) {
     const char* pass = doc["apPass"].as<const char*>();
     if (pass && strlen(pass) >= 8 && strlen(pass) <= 23) {
-      set_ap_pass(pass);
-    } else { _sendJson(false, "apPass: 8–23 символа"); return; }
+      strncpy(apPassBuf, pass, sizeof(apPassBuf) - 1);
+      apPassBuf[sizeof(apPassBuf) - 1] = '\0';
+      newApPass = apPassBuf;
+    }
+    else { _sendJson(false, "apPass: 8–23 символа"); return; }
+  }
+
+  // Все поля валидны — сохраняем в EEPROM
+  save_web_settings(newAlert, newCalib, newAlpha);
+  // Batch: ext settings — один commit вместо 3 отдельных
+  if (hasSleepSec || hasLcdBlSec || newApPass) {
+    set_ext_all(
+      hasSleepSec ? newSleepSec : get_sleep_sec(),
+      hasLcdBlSec ? newLcdBlSec : get_lcd_bl_sec(),
+      newApPass
+    );
   }
   if (doc.containsKey("schedTimes")) {
     JsonArray arr = doc["schedTimes"].as<JsonArray>();
@@ -1543,15 +1566,19 @@ static void _handleTgSettings() {
   StaticJsonDocument<256> doc;
   DeserializationError err = deserializeJson(doc, _srv.arg("plain"));
   if (err) { _sendJson(false,"Ошибка JSON"); return; }
+  // Batch: собираем token и chatId, один commit через set_tg_all()
+  const char* newToken = NULL;
+  const char* newChatId = NULL;
   if (doc.containsKey("token")) {
     const char* t = doc["token"].as<const char*>();
-    if (t && strlen(t) > 0 && strlen(t) < 50 && strchr(t, '*') == NULL) set_tg_token(t);
-    else if (t && strlen(t) == 0) set_tg_token("");
+    if (t && strlen(t) > 0 && strlen(t) < 50 && strchr(t, '*') == NULL) newToken = t;
+    else if (t && strlen(t) == 0) newToken = "";
   }
   if (doc.containsKey("chatId")) {
     const char* c = doc["chatId"].as<const char*>();
-    if (c && strlen(c) < 16) set_tg_chatid(c);
+    if (c && strlen(c) < 16) newChatId = c;
   }
+  if (newToken || newChatId) set_tg_all(newToken, newChatId);
   if (doc.containsKey("reportInt")) {
     uint32_t v = doc["reportInt"].as<uint32_t>();
     // 0 = откл, минимум 60 мин, максимум 10080 (7 дней)
@@ -1605,14 +1632,15 @@ static void _handleWifiSettings() {
   if (!doc.containsKey("wifiMode")) { _sendJson(false,"Нет wifiMode"); return; }
   uint8_t mode = doc["wifiMode"].as<uint8_t>();
   if (mode > 1) { _sendJson(false,"wifiMode: 0 или 1"); return; }
+  // Batch: один commit через set_wifi_all() вместо 3 отдельных
+  const char *ssid = NULL;
+  const char *pass = NULL;
   if (mode == 1) {
-    const char *ssid = doc["wifiSsid"].as<const char*>();
-    const char *pass = doc["wifiPass"].as<const char*>();
+    ssid = doc["wifiSsid"].as<const char*>();
+    pass = doc["wifiPass"].as<const char*>();
     if (!ssid || strlen(ssid) == 0) { _sendJson(false,"Введите SSID роутера"); return; }
-    set_wifi_ssid(ssid);
-    if (pass) set_wifi_sta_pass(pass);
   }
-  set_wifi_mode(mode);
+  set_wifi_all(mode, ssid, pass);
   log_save_backup(_buildBackupJson());
   _sendJson(true, "WiFi настройки сохранены, перезагрузка...");
   _srv.client().flush();
@@ -1685,6 +1713,7 @@ static void _handleLog() {
             if (pos > 0) _flush_buf();
             srv.sendContent((const char*)(b + sent), n);
             sent += n;
+            yield();  // WDT safe: не блокировать loop при стриме CSV
           }
           return s;
         }
@@ -1719,6 +1748,10 @@ static void _handleDayStat() {
   }
   if (date.length() == 0) date = *_wd.datetime;  // "DD.MM.YYYY HH:MM:SS" → берём первые 10
   if (date.length() > 10) date = date.substring(0, 10);
+  if (date.length() < 10) {
+    _sendJson(false, "Дата недоступна");
+    return;
+  }
   // Нормализация: YYYY-MM-DD → DD.MM.YYYY (единый формат для season/days/log_day_stat)
   if (date.length() == 10 && date.charAt(4) == '-') {
     // "YYYY-MM-DD" → "DD.MM.YYYY"
@@ -1774,20 +1807,20 @@ static void _handleLogClear() {
   if (!_auth()) return;
   _activity();
   log_clear();
-  _srv.send(200, "application/json", "{\"ok\":true}");
+  _sendJson(true, "Лог очищен");
 }
 
 // ─── /api/log/json  GET — лог в JSON ─────────────────────────────────────
 static void _handleLogJson() {
   if (!_auth()) return;
   _keepalive();  // GET-поллинг — не сбрасывать подсветку
-  String json = log_to_json(100);
+  String json = log_to_json(50);
   _srv.send(200, "application/json", json);
 }
 
 // ─── /api/backup  GET — полный бэкап настроек EEPROM ──────────────────────
 static String _buildBackupJson(bool masked) {
-  StaticJsonDocument<1024> doc;
+  DynamicJsonDocument doc(768);
   doc["_type"] = "BeehiveScale_backup";
   doc["_ver"]  = "4.1";
 
@@ -1811,7 +1844,7 @@ static String _buildBackupJson(bool masked) {
     char tbuf[6];
     for (uint8_t i = 0; i < cnt; i++) {
       snprintf(tbuf, sizeof(tbuf), "%02d:%02d", times[i] / 60, times[i] % 60);
-      arr.add(tbuf);
+      arr.add(String(tbuf));
     }
   }
 
@@ -1826,7 +1859,7 @@ static String _buildBackupJson(bool masked) {
   get_tg_token(tok, sizeof(tok));
   get_tg_chatid(cid, sizeof(cid));
   doc["tgToken"]  = masked ? _maskSecret(tok) : String(tok);
-  doc["tgChatId"] = cid;
+  doc["tgChatId"] = String(cid);
   doc["tgReportInt"] = get_tg_report_interval_min();
 
   // WiFi
@@ -1834,7 +1867,7 @@ static String _buildBackupJson(bool masked) {
   char ss[33], wp[33];
   get_wifi_ssid(ss, sizeof(ss));
   get_wifi_sta_pass(wp, sizeof(wp));
-  doc["wifiSsid"] = ss;
+  doc["wifiSsid"] = String(ss);
   doc["wifiPass"] = masked ? _maskSecret(wp) : String(wp);
 
   String out;
@@ -1844,7 +1877,7 @@ static String _buildBackupJson(bool masked) {
 
 static void _handleBackup() {
   if (!_auth()) return;
-  _activity();
+  _keepalive();  // GET-запрос — не сбрасывать таймер авто-сна
   // Сначала сохраняем полный бэкап на SD (с секретами), потом отправляем маскированный.
   // Так два больших String не сосуществуют в heap одновременно.
   log_save_backup(_buildBackupJson(false));
@@ -1861,7 +1894,7 @@ static void _handleBackupRestore() {
   _activity();
   if (_srv.method() != HTTP_POST) { _sendJson(false, "Только POST"); return; }
 
-  StaticJsonDocument<1024> doc;
+  DynamicJsonDocument doc(768);
   DeserializationError err = deserializeJson(doc, _srv.arg("plain"));
   if (err) { _sendJson(false, "Ошибка JSON"); return; }
 
@@ -1874,39 +1907,39 @@ static void _handleBackupRestore() {
 
   int restored = 0;
 
-  // Калибровка
+  // Калибровка — используем функции Memory.cpp (mark_eeprom_valid + commit)
   if (doc.containsKey("calibFactor")) {
     float cf = doc["calibFactor"].as<float>();
     if (cf >= 100.0f && cf <= 100000.0f) {
-      save_calibration(cf);
+      save_calibration(cf);  // EEPROM.put + mark_eeprom_valid + commit
       if (_wa.doSetCalibFactor) _wa.doSetCalibFactor(cf);
       restored++;
     }
   }
   if (doc.containsKey("offset")) {
     long ofs = doc["offset"].as<long>();
-    save_offset(ofs);
+    save_offset(ofs);  // EEPROM.put + mark_eeprom_valid + commit
     if (_wa.doSetCalibOffset) _wa.doSetCalibOffset(ofs);
     restored++;
   }
   if (doc.containsKey("weight")) {
     float w = doc["weight"].as<float>();
     if (w >= 0.0f && w <= 500.0f) {
-      save_weight(*_wd.lastSavedWeight, w);
+      save_weight(*_wd.lastSavedWeight, w);  // lastWeight=w, EEPROM.put + commit
       restored++;
     }
   }
   if (doc.containsKey("prevWeight")) {
     float pw = doc["prevWeight"].as<float>();
     if (pw >= 0.0f && pw <= 500.0f) {
-      save_prev_weight(pw);
+      save_prev_weight(pw);  // EEPROM.put + commit
       *_wd.prevWeight = pw;
       restored++;
     }
   }
   if (doc.containsKey("prevOffset")) {
     long po = doc["prevOffset"].as<long>();
-    save_prev_offset(po);
+    save_prev_offset(po);  // EEPROM.put + commit
     restored++;
   }
 
@@ -1917,9 +1950,16 @@ static void _handleBackupRestore() {
   if (doc.containsKey("emaAlpha"))    { float v = doc["emaAlpha"].as<float>();    if (v >= 0.05f && v <= 0.9f) { ea = v; restored++; } }
   save_web_settings(ad, cw, ea);
 
-  if (doc.containsKey("sleepSec")) { uint32_t v = doc["sleepSec"].as<uint32_t>(); if (v >= 30 && v <= 86400) { set_sleep_sec(v); restored++; } }
-  if (doc.containsKey("lcdBlSec")) { uint16_t v = doc["lcdBlSec"].as<uint16_t>(); if (v <= 3600) { set_lcd_bl_sec(v); restored++; } }
-  if (doc.containsKey("apPass"))   { const char* p = doc["apPass"] | ""; if (strlen(p) >= 8 && strlen(p) <= 23 && strchr(p, '*') == NULL) { set_ap_pass(p); restored++; } }
+  // Ext settings — batch: один commit вместо 3
+  {
+    uint32_t extSleep = get_sleep_sec();
+    uint16_t extLcd   = get_lcd_bl_sec();
+    const char* extAp = nullptr;
+    if (doc.containsKey("sleepSec")) { uint32_t v = doc["sleepSec"].as<uint32_t>(); if (v >= 30 && v <= 86400) { extSleep = v; restored++; } }
+    if (doc.containsKey("lcdBlSec")) { uint16_t v = doc["lcdBlSec"].as<uint16_t>(); if (v <= 3600) { extLcd = v; restored++; } }
+    if (doc.containsKey("apPass"))   { const char* p = doc["apPass"] | ""; if (strlen(p) >= 8 && strlen(p) <= 23 && strchr(p, '*') == NULL) { extAp = p; restored++; } }
+    set_ext_all(extSleep, extLcd, extAp);
+  }
   if (doc.containsKey("schedTimes")) {
     JsonArray arr = doc["schedTimes"].as<JsonArray>();
     uint16_t times[8]; uint8_t cnt = 0;
@@ -1934,17 +1974,29 @@ static void _handleBackupRestore() {
     set_sched_times(times, cnt); restored++;
   }
 
-  // Telegram
-  if (doc.containsKey("tgToken"))  { const char* t = doc["tgToken"] | "";  if (strlen(t) > 0 && strchr(t, '*') == NULL) { set_tg_token(t); restored++; } }
-  if (doc.containsKey("tgChatId")) { const char* c = doc["tgChatId"] | ""; if (strlen(c) > 0) { set_tg_chatid(c); restored++; } }
+  // Telegram — batch: собираем поля, один commit через set_tg_all()
+  {
+    const char* newTkn = nullptr;
+    const char* newCid = nullptr;
+    if (doc.containsKey("tgToken"))  { const char* t = doc["tgToken"] | "";  if (strlen(t) > 0 && strchr(t, '*') == NULL) { newTkn = t; restored++; } }
+    if (doc.containsKey("tgChatId")) { const char* c = doc["tgChatId"] | ""; if (strlen(c) > 0 && strlen(c) < 16) { newCid = c; restored++; } }
+    if (newTkn || newCid) set_tg_all(newTkn, newCid);
+  }
   if (doc.containsKey("tgReportInt")) { uint32_t v = doc["tgReportInt"].as<uint32_t>(); if (v == 0 || (v >= 60 && v <= 10080)) { set_tg_report_interval_min(v); restored++; } }
 
-  // WiFi
-  if (doc.containsKey("wifiMode")) { uint8_t m = doc["wifiMode"].as<uint8_t>(); if (m <= 1) { set_wifi_mode(m); restored++; } }
-  if (doc.containsKey("wifiSsid")) { const char* s = doc["wifiSsid"] | ""; if (strlen(s) > 0) { set_wifi_ssid(s); restored++; } }
-  if (doc.containsKey("wifiPass")) { const char* p = doc["wifiPass"] | ""; if (strlen(p) > 0 && strchr(p, '*') == NULL) { set_wifi_sta_pass(p); restored++; } }
+  // WiFi — batch: собираем поля, один commit через set_wifi_all()
+  {
+    bool hasWifi = false;
+    uint8_t mode = get_wifi_mode();
+    char ssid[33]; get_wifi_ssid(ssid, sizeof(ssid));
+    char pass[33]; get_wifi_sta_pass(pass, sizeof(pass));
+    if (doc.containsKey("wifiMode")) { uint8_t m = doc["wifiMode"].as<uint8_t>(); if (m <= 1) { mode = m; hasWifi = true; restored++; } }
+    if (doc.containsKey("wifiSsid")) { const char* s = doc["wifiSsid"] | ""; if (strlen(s) > 0) { strncpy(ssid, s, 32); ssid[32] = '\0'; hasWifi = true; restored++; } }
+    if (doc.containsKey("wifiPass")) { const char* p = doc["wifiPass"] | ""; if (strlen(p) > 0 && strchr(p, '*') == NULL) { strncpy(pass, p, 32); pass[32] = '\0'; hasWifi = true; restored++; } }
+    if (hasWifi) set_wifi_all(mode, ssid, pass);
+  }
 
-  char msg[48];
+  char msg[64];
   snprintf(msg, sizeof(msg), "Восстановлено %d параметров", restored);
   _sendJson(true, msg);
 }

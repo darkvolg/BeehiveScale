@@ -59,6 +59,7 @@ uint16_t get_lcd_bl_sec();
 void     set_lcd_bl_sec(uint16_t sec);
 void     get_ap_pass(char *buf, size_t maxLen);
 void     set_ap_pass(const char *pass);
+void     set_ext_all(uint32_t sleepSec, uint16_t lcdBlSec, const char *apPass);  // batch: все ext-поля + 1 commit
 
 // Калибровка и вес
 void load_calibration_data(float &factor, long &offset, float &weight);
@@ -72,6 +73,8 @@ void get_tg_token(char *buf, size_t maxLen);
 void set_tg_token(const char *token);
 void get_tg_chatid(char *buf, size_t maxLen);
 void set_tg_chatid(const char *chatid);
+void tg_commit();   // batch: записать TG-блок + commit (после изменения token/chatid без commit)
+void set_tg_all(const char *token, const char *chatid);  // batch: оба поля + 1 commit
 
 // WiFi режим и STA credentials
 void     wifi_settings_init();
@@ -81,6 +84,8 @@ void     get_wifi_ssid(char *buf, size_t maxLen);
 void     set_wifi_ssid(const char *ssid);
 void     get_wifi_sta_pass(char *buf, size_t maxLen);
 void     set_wifi_sta_pass(const char *pass);
+void     wifi_commit();   // batch: записать WiFi-блок + commit
+void     set_wifi_all(uint8_t mode, const char *ssid, const char *pass);  // batch: все поля + 1 commit
 
 // Расписание замеров (до 8 суточных времён)
 void     sched_settings_init();

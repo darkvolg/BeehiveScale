@@ -38,6 +38,14 @@ float bat_voltage() {
 
 int bat_percent() {
   float v = _batSmoothed;
-  float pct = (v - BAT_VMIN) / (BAT_VMAX - BAT_VMIN) * 100.0f;
+  // Кусочно-линейная аппроксимация LiPo кривой разряда
+  float pct;
+  if (v >= 4.10f)      pct = 95 + (v - 4.10f) / (4.20f - 4.10f) * 5.0f;   // 4.10-4.20 → 95-100%
+  else if (v >= 3.90f) pct = 75 + (v - 3.90f) / (4.10f - 3.90f) * 20.0f;  // 3.90-4.10 → 75-95%
+  else if (v >= 3.75f) pct = 45 + (v - 3.75f) / (3.90f - 3.75f) * 30.0f;  // 3.75-3.90 → 45-75%
+  else if (v >= 3.60f) pct = 15 + (v - 3.60f) / (3.75f - 3.60f) * 30.0f;  // 3.60-3.75 → 15-45%
+  else if (v >= 3.40f) pct =  5 + (v - 3.40f) / (3.60f - 3.40f) * 10.0f;  // 3.40-3.60 → 5-15%
+  else if (v >= BAT_VMIN) pct = (v - BAT_VMIN) / (3.40f - BAT_VMIN) * 5.0f; // 3.00-3.40 → 0-5%
+  else pct = 0.0f;
   return constrain((int)pct, 0, 100);
 }

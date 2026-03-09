@@ -61,6 +61,9 @@ void load_calibration_data(float &factor, long &offset, float &weight) {
     factor = 2280.0f;
     offset = 0;
     weight = 0.0f;
+    EEPROM.put(EEPROM_ADDR_CALIB, factor);
+    EEPROM.put(EEPROM_ADDR_OFFSET, offset);
+    EEPROM.put(EEPROM_ADDR_WEIGHT, weight);
     mark_eeprom_valid();
     EEPROM.commit();
     return;
@@ -201,6 +204,17 @@ void set_ap_pass(const char *pass) {
   _ext_save();
 }
 
+void set_ext_all(uint32_t sleepSec, uint16_t lcdBlSec, const char *apPass) {
+  if (!_extLoaded) ext_settings_init();
+  if (sleepSec >= 30UL && sleepSec <= 86400UL) _sleepSec = sleepSec;
+  if (lcdBlSec <= 3600) _lcdBlSec = lcdBlSec;
+  if (apPass && strlen(apPass) >= 8 && strlen(apPass) <= 23) {
+    strncpy(_apPass, apPass, sizeof(_apPass) - 1);
+    _apPass[sizeof(_apPass) - 1] = '\0';
+  }
+  _ext_save();
+}
+
 // ─── Telegram настройки ───────────────────────────────────────────────────
 static char _tgToken[50]  = "";
 static char _tgChatId[16] = "";
@@ -228,13 +242,19 @@ void get_tg_token(char *buf, size_t maxLen) {
   buf[maxLen - 1] = '\0';
 }
 
+// Записывает TG-блок в EEPROM-буфер БЕЗ commit (для batch-сохранения)
+static void _tg_write() {
+  EEPROM.put(EEPROM_ADDR_TG_TOKEN,  _tgToken);
+  EEPROM.put(EEPROM_ADDR_TG_CHATID, _tgChatId);
+  byte magic = EEPROM_MAGIC_TG_VALUE;
+  EEPROM.put(EEPROM_ADDR_TG_MAGIC, magic);
+}
+
 void set_tg_token(const char *token) {
   if (!token) return;
   strncpy(_tgToken, token, sizeof(_tgToken) - 1);
   _tgToken[sizeof(_tgToken) - 1] = '\0';
-  EEPROM.put(EEPROM_ADDR_TG_TOKEN,  _tgToken);
-  byte magic = EEPROM_MAGIC_TG_VALUE;
-  EEPROM.put(EEPROM_ADDR_TG_MAGIC, magic);
+  _tg_write();
   EEPROM.commit();
 }
 
@@ -248,9 +268,20 @@ void set_tg_chatid(const char *chatid) {
   if (!chatid) return;
   strncpy(_tgChatId, chatid, sizeof(_tgChatId) - 1);
   _tgChatId[sizeof(_tgChatId) - 1] = '\0';
-  EEPROM.put(EEPROM_ADDR_TG_CHATID, _tgChatId);
-  byte magic = EEPROM_MAGIC_TG_VALUE;
-  EEPROM.put(EEPROM_ADDR_TG_MAGIC, magic);
+  _tg_write();
+  EEPROM.commit();
+}
+
+void tg_commit() {
+  _tg_write();
+  EEPROM.commit();
+}
+
+void set_tg_all(const char *token, const char *chatid) {
+  if (!_tgLoaded) tg_settings_init();
+  if (token) { strncpy(_tgToken, token, sizeof(_tgToken) - 1); _tgToken[sizeof(_tgToken) - 1] = '\0'; }
+  if (chatid) { strncpy(_tgChatId, chatid, sizeof(_tgChatId) - 1); _tgChatId[sizeof(_tgChatId) - 1] = '\0'; }
+  _tg_write();
   EEPROM.commit();
 }
 
@@ -279,19 +310,19 @@ void wifi_settings_init() {
   _wifiCfgLoaded = true;
 }
 
-static void _wifi_save() {
+// Записывает WiFi-блок в EEPROM-буфер БЕЗ commit (для batch-сохранения)
+static void _wifi_write() {
   byte magic = EEPROM_MAGIC_WIFI_VALUE;
   EEPROM.put(EEPROM_ADDR_WIFI_MAGIC, magic);
   EEPROM.put(EEPROM_ADDR_WIFI_MODE,  _wifiMode);
   EEPROM.put(EEPROM_ADDR_WIFI_SSID,  _wifiSsid);
   EEPROM.put(EEPROM_ADDR_WIFI_PASS,  _wifiStaPass);
-  EEPROM.commit();
 }
 
 uint8_t get_wifi_mode() { if (!_wifiCfgLoaded) wifi_settings_init(); return _wifiMode; }
 void set_wifi_mode(uint8_t m) {
   if (m > 1) return;
-  _wifiMode = m; _wifi_save();
+  _wifiMode = m; _wifi_write(); EEPROM.commit();
 }
 
 void get_wifi_ssid(char *buf, size_t maxLen) {
@@ -303,7 +334,7 @@ void set_wifi_ssid(const char *ssid) {
   if (!ssid) return;
   strncpy(_wifiSsid, ssid, sizeof(_wifiSsid) - 1);
   _wifiSsid[sizeof(_wifiSsid) - 1] = '\0';
-  _wifi_save();
+  _wifi_write(); EEPROM.commit();
 }
 
 void get_wifi_sta_pass(char *buf, size_t maxLen) {
@@ -315,7 +346,27 @@ void set_wifi_sta_pass(const char *pass) {
   if (!pass) return;
   strncpy(_wifiStaPass, pass, sizeof(_wifiStaPass) - 1);
   _wifiStaPass[sizeof(_wifiStaPass) - 1] = '\0';
-  _wifi_save();
+  _wifi_write(); EEPROM.commit();
+}
+
+void set_wifi_all(uint8_t mode, const char *ssid, const char *pass) {
+  if (!_wifiCfgLoaded) wifi_settings_init();
+  bool changed = false;
+  if (mode <= 1 && mode != _wifiMode) { _wifiMode = mode; changed = true; }
+  if (ssid && strncmp(_wifiSsid, ssid, sizeof(_wifiSsid) - 1) != 0) {
+    strncpy(_wifiSsid, ssid, sizeof(_wifiSsid) - 1); _wifiSsid[sizeof(_wifiSsid) - 1] = '\0'; changed = true;
+  }
+  if (pass && strncmp(_wifiStaPass, pass, sizeof(_wifiStaPass) - 1) != 0) {
+    strncpy(_wifiStaPass, pass, sizeof(_wifiStaPass) - 1); _wifiStaPass[sizeof(_wifiStaPass) - 1] = '\0'; changed = true;
+  }
+  if (!changed) return;
+  _wifi_write();
+  EEPROM.commit();
+}
+
+void wifi_commit() {
+  _wifi_write();
+  EEPROM.commit();
 }
 
 // ─── Расписание замеров ────────────────────────────────────────────────────
@@ -326,7 +377,7 @@ static bool     _schedLoaded = false;
 
 void sched_settings_init() {
   if (_schedLoaded) return;
-  byte magic;
+  byte magic = 0;
   EEPROM.get(EEPROM_ADDR_SCHED_MAGIC, magic);
   if (magic == EEPROM_MAGIC_SCHED_VALUE) {
     EEPROM.get(EEPROM_ADDR_SCHED_COUNT, _schedCount);
@@ -386,7 +437,7 @@ static bool     _tgRptLoaded = false;
 
 void tg_report_settings_init() {
   if (_tgRptLoaded) return;
-  byte magic;
+  byte magic = 0;
   EEPROM.get(EEPROM_ADDR_TG_REPORT_MAGIC, magic);
   if (magic == EEPROM_MAGIC_TG_RPT_VALUE) {
     EEPROM.get(EEPROM_ADDR_TG_REPORT_INT, _tgReportIntervalMin);

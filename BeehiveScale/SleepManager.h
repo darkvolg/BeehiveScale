@@ -4,7 +4,6 @@
 #include <Arduino.h>
 
 #define SLEEP_MODE_CONTINUOUS
-#define SLEEP_INTERVAL_SEC   900UL
 #define SLEEP_WAKEUP_PIN     0
 
 #if defined(ESP8266)
@@ -23,6 +22,7 @@ struct SleepPersistData {
 };
 // RTC user memory: max 512 bytes (128 uint32_t words). Assert size fits.
 static_assert(sizeof(SleepPersistData) <= 64, "SleepPersistData too large for RTC user memory");
+static_assert(sizeof(SleepPersistData) % 4 == 0, "SleepPersistData must be 4-byte aligned for RTC memory");
 
 
 void sleep_init();

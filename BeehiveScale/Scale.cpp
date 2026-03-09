@@ -46,10 +46,14 @@ float scale_read_weight(HX711 &scale, int samples) {
   // (2 одинаковых — нормально для стабильного груза)
   {
     long raw1 = scale.read();
+    yield();
     long raw2 = scale.read();
+    yield();
     long raw3 = scale.read();
+    yield();
     if (raw1 == raw2 && raw2 == raw3) {
       scale_power_cycle(scale);
+      yield();
       if (!scale.wait_ready_timeout(1000)) return NAN;
       val = scale.get_units(samples);
     }

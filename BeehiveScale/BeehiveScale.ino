@@ -216,6 +216,8 @@ void setup() {
     // ArduinoOTA — обновление прошивки по воздуху
     ArduinoOTA.setHostname("beehivescale");
     ArduinoOTA.setPassword("ota_beehive");
+    ArduinoOTA.onStart([]() { lastActivityTime = millis(); });
+    ArduinoOTA.onProgress([](unsigned int, unsigned int) { lastActivityTime = millis(); });
     ArduinoOTA.begin();
   } else {
     Serial.println(F("[WiFi] Initialization failed!"));
@@ -391,6 +393,9 @@ void loop() {
     sys.wifiOk = (WiFi.softAPIP() != IPAddress(0,0,0,0));
   } else {
     sys.wifiOk = (WiFi.status() == WL_CONNECTED);
+    if (!sys.wifiOk && webServerStarted) {
+      webServerStarted = false;
+    }
     ntp_loop();
   }
 
@@ -703,6 +708,8 @@ void process_temperature() {
   // При ошибке CRC — сохраняем предыдущее валидное значение
 }
 
+void show_screen_num(int n);  // forward declaration
+
 void update_interface() {
   if (!sys.needsRedraw) return;
   if (sys.menuScreen != sys.lastMenuScreen) {
@@ -759,10 +766,11 @@ void display_screen_temp() {
   char buf[24];
   lcd.setCursor(0, 0);
   if (sys.tempData.valid) {
-    snprintf(buf, sizeof(buf), "T:%4.1fC R:%4.1fC",
-             sys.tempData.temperature, sys.rtcTempC);
+    if (isnan(sys.rtcTempC)) snprintf(buf, sizeof(buf), "T:%4.1fC R: ---", sys.tempData.temperature);
+    else snprintf(buf, sizeof(buf), "T:%4.1fC R:%4.1fC", sys.tempData.temperature, sys.rtcTempC);
   } else {
-    snprintf(buf, sizeof(buf), "T: ---  R:%4.1fC", sys.rtcTempC);
+    if (isnan(sys.rtcTempC)) snprintf(buf, sizeof(buf), "T: ---  R: ---");
+    else snprintf(buf, sizeof(buf), "T: ---  R:%4.1fC", sys.rtcTempC);
   }
   lcd_print_padded(lcd, buf);
 
@@ -856,7 +864,7 @@ void display_screen_diag() {
       Serial.println(F("[DIAG] HX711: FAIL"));
     }
     delay(1000);
-    app_wdt_reset();
+    app_wdt_reset(); yield();
 
     // --- DS18B20 ---
     lcd.setCursor(0, 1);
@@ -885,7 +893,7 @@ void display_screen_diag() {
       }
     }
     delay(1000);
-    app_wdt_reset();
+    app_wdt_reset(); yield();
 
     // --- RTC ---
     lcd.setCursor(0, 1);
@@ -905,7 +913,7 @@ void display_screen_diag() {
       Serial.println(F("[DIAG] RTC: FAIL"));
     }
     delay(1000);
-    app_wdt_reset();
+    app_wdt_reset(); yield();
 
     // --- Battery ---
     lcd.setCursor(0, 1);
@@ -926,7 +934,7 @@ void display_screen_diag() {
       Serial.println(F("V)"));
     }
     delay(1000);
-    app_wdt_reset();
+    app_wdt_reset(); yield();
 
     // --- Сводка ---
     lcd.clear();
@@ -958,8 +966,10 @@ void adjust_calibration() {
   lcd.clear();
   unsigned long lastWeighTime = 0;
   float liveWeight = sys.smoothedWeight;
+  unsigned long adjustStart = millis();
 
   for (;;) {
+    if (millis() - adjustStart > 300000UL) { lastActivityTime = millis(); break; } // 5 мин таймаут
     app_wdt_reset();
 
     // Обновляем вес каждые 500мс
@@ -1027,6 +1037,10 @@ void adjust_calibration() {
 
     yield();
   }
+  // Restore CF after timeout (break exits without saving)
+  scale.set_scale(sys.calibrationFactor);
+  sys.emaInitialized = false;
+  sys.needsRedraw = true;
 }
 
 void display_error() {
@@ -1074,7 +1088,7 @@ void perform_taring() {
     long sum = 0;
     const int TARE_SAMPLES = 20;
     for (int i = 0; i < TARE_SAMPLES; i++) {
-      scale.wait_ready_timeout(500);
+      if (!scale.wait_ready_timeout(500)) continue;
       sum += scale.read();
       app_wdt_reset();
       yield();
@@ -1147,9 +1161,9 @@ void perform_calibration() {
   unsigned long start = millis();
   while (digitalRead(BUTTON_PIN) == LOW) {
     app_wdt_reset(); yield();
-    if (millis() - start > 10000) { sys.needsRedraw = true; return; }
+    if (millis() - start > 10000) { sys.needsRedraw = true; lastActivityTime = millis(); return; }
   }
-  if (!wait_press(BUTTON_PIN, 30000)) { sys.needsRedraw = true; return; }
+  if (!wait_press(BUTTON_PIN, 30000)) { sys.needsRedraw = true; lastActivityTime = millis(); return; }
 
   // Проверяем HX711 перед тарированием
   if (!scale.wait_ready_timeout(3000)) {
@@ -1157,7 +1171,7 @@ void perform_calibration() {
     lcd.setCursor(0, 0); lcd_print_padded(lcd, "OSHIBKA HX711!  ");
     lcd.setCursor(0, 1); lcd_print_padded(lcd, "Proverte provod!");
     { unsigned long _t0=millis(); while(millis()-_t0<2000UL){app_wdt_reset();yield();} }
-    sys.needsRedraw = true;
+    sys.needsRedraw = true; lastActivityTime = millis();
     return;
   }
 
@@ -1182,7 +1196,7 @@ void perform_calibration() {
       lcd.setCursor(0, 0); lcd_print_padded(lcd, "HX711 zavis!    ");
       lcd.setCursor(0, 1); lcd_print_padded(lcd, "Proverte provod!");
       { unsigned long _t0=millis(); while(millis()-_t0<2000UL){app_wdt_reset();yield();} }
-      sys.needsRedraw = true;
+      sys.needsRedraw = true; lastActivityTime = millis();
       return;
     }
   }
@@ -1204,7 +1218,7 @@ void perform_calibration() {
   lcd.clear();
   lcd.setCursor(0, 0); lcd_print_padded(lcd, "Polozh. 1 kg    ");
   lcd.setCursor(0, 1); lcd_print_padded(lcd, "Zhmi knopku...  ");
-  if (!wait_press(BUTTON_PIN, 30000)) { sys.needsRedraw = true; return; }
+  if (!wait_press(BUTTON_PIN, 30000)) { sys.needsRedraw = true; lastActivityTime = millis(); return; }
 
   // Пауза 1.5 сек — дать грузу стабилизироваться
   lcd.clear();
@@ -1216,7 +1230,7 @@ void perform_calibration() {
     lcd.setCursor(0, 0); lcd_print_padded(lcd, "OSHIBKA HX711!  ");
     lcd.setCursor(0, 1); lcd_print_padded(lcd, "Povtorite       ");
     { unsigned long _t0=millis(); while(millis()-_t0<2000UL){app_wdt_reset();yield();} }
-    sys.needsRedraw = true;
+    sys.needsRedraw = true; lastActivityTime = millis();
     return;
   }
 
@@ -1247,7 +1261,7 @@ void perform_calibration() {
       lcd.setCursor(0, 1); lcd_print_padded(lcd, dbg);
       Serial.print(F("[Calib] ERROR: raw too small=")); Serial.println(raw, 0);
       { unsigned long _t0=millis(); while(millis()-_t0<3000UL){app_wdt_reset();yield();} }
-      sys.needsRedraw = true;
+      sys.needsRedraw = true; lastActivityTime = millis();
       return;
     }
   }
@@ -1273,10 +1287,11 @@ void perform_calibration() {
 
   lcd.clear();
   lcd.setCursor(0, 0); lcd_print_padded(lcd, "OK! Factor:     ");
-  { char _cbuf[10]; dtostrf(sys.calibrationFactor, 7, 3, _cbuf); lcd.setCursor(0, 1); lcd_print_padded(lcd, _cbuf); }
+  { char _cbuf[16]; dtostrf(sys.calibrationFactor, 7, 3, _cbuf); lcd.setCursor(0, 1); lcd_print_padded(lcd, _cbuf); }
   app_wdt_reset();
   { unsigned long _t0=millis(); while(millis()-_t0<2500UL){app_wdt_reset();yield();} }
   sys.needsRedraw = true;
+  lastActivityTime = millis();
   Serial.print(F("[Calib] Factor=")); Serial.println(sys.calibrationFactor, 4);
 }
 

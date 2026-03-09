@@ -32,11 +32,15 @@ ButtonAction read_button(int pin, ButtonState &state) {
   unsigned long now = millis();
 
   // Если ISR поймал нажатие пока loop был занят — подхватываем
-  if (state.irqFell && !state.isPressed) {
+  noInterrupts();
+  bool fell = state.irqFell;
+  unsigned long irqT = state.irqTime;
+  state.irqFell = false;
+  interrupts();
+
+  if (fell && !state.isPressed) {
     // ISR зафиксировал FALLING edge — кнопка была нажата
     // Проверяем что сейчас она уже отпущена (или ещё нажата)
-    state.irqFell = false;
-    unsigned long irqT = state.irqTime;
 
     if (!raw) {
       // Кнопка уже отпущена — короткое нажатие произошло между опросами

@@ -1,5 +1,8 @@
 #include "Display.h"
 
+static unsigned long _blLastActivity = 0;
+static bool _blOn = true;
+
 void lcd_init(LiquidCrystal_I2C &lcd) {
   delay(50);
   lcd.init();
@@ -8,6 +11,7 @@ void lcd_init(LiquidCrystal_I2C &lcd) {
   lcd.clear();
   lcd.noCursor();
   lcd.setCursor(0, 0);
+  _blLastActivity = millis();
 }
 
 void lcd_print_padded(LiquidCrystal_I2C &lcd, const char* text) {
@@ -25,9 +29,6 @@ void lcd_print_padded(LiquidCrystal_I2C &lcd, const char* text) {
 void lcd_print_padded(LiquidCrystal_I2C &lcd, const String &text) {
   lcd_print_padded(lcd, text.c_str());
 }
-
-static unsigned long _blLastActivity = 0;
-static bool _blOn = true;
 
 void lcd_backlight_activity(LiquidCrystal_I2C &lcd) {
   _blLastActivity = millis();

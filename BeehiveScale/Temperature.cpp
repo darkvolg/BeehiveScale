@@ -61,7 +61,7 @@ TempData temp_read() {
   }
   _ds.requestTemperatures();
 
-  if (t == DEVICE_DISCONNECTED_C || t < -55.0f || t > 125.0f) {
+  if (t == DEVICE_DISCONNECTED_C || t < -55.0f || t > 125.0f || t == 85.0f) {
     td.valid = false;
     td.temperature = TEMP_ERROR_VALUE;
   } else {
