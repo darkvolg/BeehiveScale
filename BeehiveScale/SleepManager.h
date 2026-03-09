@@ -4,6 +4,9 @@
 #include <Arduino.h>
 
 #define SLEEP_MODE_CONTINUOUS
+#if defined(SLEEP_MODE_CONTINUOUS) && defined(SLEEP_MODE_DEEP_SLEEP)
+  #error "Cannot define both SLEEP_MODE_CONTINUOUS and SLEEP_MODE_DEEP_SLEEP"
+#endif
 #define SLEEP_WAKEUP_PIN     0
 
 #if defined(ESP8266)

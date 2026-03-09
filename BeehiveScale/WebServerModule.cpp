@@ -683,6 +683,7 @@ let _wizStep = 0;
 let _wifiMode = 0;
 // Данные для тултипов (по серии)
 let _tipPts = {};
+function esc(s){var d=document.createElement('div');d.textContent=String(s);return d.innerHTML;}
 
 // ── Nav ──────────────────────────────────────────────────────────────
 function nav(id) {
@@ -907,7 +908,7 @@ function renderCharts() {
   if (_serVisible.w) {
     _tipPts.w=pts;
     const ws=pts.map(d=>parseFloat(d.w)).filter(v=>!isNaN(v));
-    const mn=Math.min(...ws),mx=Math.max(...ws),av=ws.reduce((a,b)=>a+b,0)/ws.length;
+    const mn=ws.reduce((a,b)=>a<b?a:b),mx=ws.reduce((a,b)=>a>b?a:b),av=ws.reduce((a,b)=>a+b,0)/ws.length;
     setText('c-wmin',mn.toFixed(3)); setText('c-wmax',mx.toFixed(3));
     setText('c-wavg',av.toFixed(3)); setText('c-pts',pts.length);
     drawLineSvg(document.getElementById('chart-w'),pts,'w','#f5a623',900,260,60,10,12,42,true);
@@ -915,7 +916,7 @@ function renderCharts() {
   if (_serVisible.t) {
     _tipPts.t=pts;
     const ts=pts.map(d=>parseFloat(d.t)).filter(v=>!isNaN(v)&&v>-90);
-    if(ts.length){setText('c-tmin',Math.min(...ts).toFixed(1));setText('c-tmax',Math.max(...ts).toFixed(1));}
+    if(ts.length){setText('c-tmin',ts.reduce((a,b)=>a<b?a:b).toFixed(1));setText('c-tmax',ts.reduce((a,b)=>a>b?a:b).toFixed(1));}
     drawLineSvg(document.getElementById('chart-t'),pts,'t','#56ccf2',900,260,60,10,12,42,true);
   }
   if (_serVisible.b) {
@@ -932,7 +933,7 @@ function drawLineSvg(svg,pts,key,color,W,H,L,R,T,B,showAxes) {
   // Для температуры и батареи: игнорируем нули при расчёте шкалы (0 = датчик не работал / USB)
   let scaleVals=(key==='t'||key==='b')?vals.filter(v=>v>0.05):vals;
   if(scaleVals.length<2) scaleVals=vals;
-  let mn=Math.min(...scaleVals),mx=Math.max(...scaleVals);
+  let mn=scaleVals.reduce((a,b)=>a<b?a:b),mx=scaleVals.reduce((a,b)=>a>b?a:b);
   // Добавляем 5% padding сверху/снизу чтобы линия не прилипала к краям
   const range=mx-mn||1;
   mn-=range*0.05; mx+=range*0.05;
@@ -1008,7 +1009,7 @@ function onTip(e,s){
   if(best<0||bestD>pW/pts.length*3){hideTip(s);return;}
   const p=pts[best], v=parseFloat(p[key]);
   const tip=document.getElementById('tip-'+s);
-  tip.innerHTML=`<b style="color:${color}">${isNaN(v)||v<=-90?'--':v.toFixed(key==='b'?3:2)+unit}</b><br>${p.dt||''}`;
+  tip.innerHTML=`<b style="color:${color}">${isNaN(v)||v<=-90?'--':v.toFixed(key==='b'?3:2)+unit}</b><br>${esc(p.dt||'')}`;
   tip.style.display='';
   let tx=(e.clientX-rect.left)+10, ty=(e.clientY-rect.top)-48;
   if(tx+140>rect.width) tx=(e.clientX-rect.left)-150;
@@ -1047,8 +1048,8 @@ function exportCsv(){
 
 function previewExport(){
   const {data,cols}=getExpData();
-  let html=`<tr>${cols.map(c=>`<th>${c.h}</th>`).join('')}</tr>`;
-  data.slice(-10).forEach(d=>{html+=`<tr>${cols.map(c=>`<td>${d[c.k]||''}</td>`).join('')}</tr>`;});
+  let html=`<tr>${cols.map(c=>`<th>${esc(c.h)}</th>`).join('')}</tr>`;
+  data.slice(-10).forEach(d=>{html+=`<tr>${cols.map(c=>`<td>${esc(d[c.k]||'')}</td>`).join('')}</tr>`;});
   document.getElementById('prev-table').innerHTML=html;
   document.getElementById('preview-wrap').style.display='block';
 }
@@ -1066,8 +1067,8 @@ function _doExcel(){
   const ws=XLSX.utils.json_to_sheet(rows);
   const vals=data.map(d=>parseFloat(d.w)).filter(v=>!isNaN(v));
   const stat=[['Параметр','Значение'],['Записей',data.length],
-    ['Мин вес',vals.length?Math.min(...vals).toFixed(3):''],
-    ['Макс вес',vals.length?Math.max(...vals).toFixed(3):''],
+    ['Мин вес',vals.length?vals.reduce((a,b)=>a<b?a:b).toFixed(3):''],
+    ['Макс вес',vals.length?vals.reduce((a,b)=>a>b?a:b).toFixed(3):''],
     ['Среднее', vals.length?(vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(3):'']];
   const ws2=XLSX.utils.aoa_to_sheet(stat);
   const days={};
@@ -1080,7 +1081,7 @@ function _doExcel(){
   XLSX.writeFile(wb,'beehive_log.xlsx');
 }
 
-function dlBlob(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();}
+function dlBlob(blob,name){const a=document.createElement('a');const u=URL.createObjectURL(blob);a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),5000);}
 function dlSdDate(){const d=document.getElementById('exp-date-sd').value;if(!d){toast('Выберите дату',true);return;}window.open('/api/log?date='+d,'_blank');}
 
 // ── Backup ─────────────────────────────────────────────────────────────
@@ -1527,7 +1528,8 @@ static void _handleReboot() {
   if (!_auth()) return;
   _sendJson(true, "Перезагрузка...");
   _srv.client().flush();
-  delay(200);
+  _srv.client().stop();
+  delay(500);
   ESP.restart();
 }
 
@@ -1639,6 +1641,8 @@ static void _handleWifiSettings() {
     ssid = doc["wifiSsid"].as<const char*>();
     pass = doc["wifiPass"].as<const char*>();
     if (!ssid || strlen(ssid) == 0) { _sendJson(false,"Введите SSID роутера"); return; }
+    if (strlen(ssid) > 32) { _sendJson(false,"SSID слишком длинный (макс 32)"); return; }
+    if (pass && strlen(pass) > 32) { _sendJson(false,"Пароль слишком длинный (макс 32)"); return; }
   }
   set_wifi_all(mode, ssid, pass);
   log_save_backup(_buildBackupJson());

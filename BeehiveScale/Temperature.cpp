@@ -57,7 +57,7 @@ TempData temp_read() {
   for (int attempt = 0; attempt < 3; attempt++) {
     t = _ds.getTempCByIndex(0);
     if (t != DEVICE_DISCONNECTED_C) break;
-    if (attempt < 2) { unsigned long _t=millis(); while(millis()-_t<20){yield();} }
+    if (attempt < 2) { unsigned long tStart=millis(); while(millis()-tStart<20){yield();} }
   }
   _ds.requestTemperatures();
 

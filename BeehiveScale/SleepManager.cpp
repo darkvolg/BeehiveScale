@@ -25,7 +25,17 @@ void sleep_init() {
 
 void sleep_load_persistent(SleepPersistData &data) {
 #if defined(ESP8266)
-  ESP.rtcUserMemoryRead(0, (uint32_t*)&_persist, sizeof(_persist));
+  if (!ESP.rtcUserMemoryRead(0, (uint32_t*)&_persist, sizeof(_persist))) {
+    Serial.println(F("[Sleep] RTC memory read failed"));
+    data.magic = 0xDEADBEEF;
+    data.lastWeight = 0.0f;
+    data.lastTempC = TEMP_ERROR_VALUE;
+    data.wakeupCount = 0;
+    data.alertSent = false;
+    data.lastAlertWeight = 0.0f;
+    _persist = data;
+    return;
+  }
 #endif
   if (_persist.magic == 0xDEADBEEF) {
     data = _persist;

@@ -165,6 +165,10 @@ void setup() {
 
   sleep_init();
   sleep_load_persistent(persist);
+#ifdef SLEEP_MODE_CONTINUOUS
+  persist.wakeupCount++;
+  sleep_save_persistent(persist);
+#endif
 
   lcd_init(lcd);
 
@@ -196,7 +200,9 @@ void setup() {
     scale.set_offset(sys.offset);
   }
 
+  yield();
   sys.wifiOk = wifi_init();  // Инициализация WiFi (AP или STA режим)
+  yield();
 
   // После WiFi восстанавливаем параметры HX711 (на ESP8266 WiFi.mode() может сбросить GPIO)
   if (sys.sensorReady) {
@@ -204,7 +210,9 @@ void setup() {
     scale.set_offset(sys.offset);
   }
 
+  yield();
   show_splash_screen();
+  yield();
   if (sys.wifiOk) {
     Serial.println(F("[WiFi] Connected"));
     Serial.print(F("[WiFi] IP: "));
@@ -304,7 +312,7 @@ void loop() {
       // RTC недоступен — используем uptime как fallback, чтобы запись в лог не блокировалась
       unsigned long sec = millis() / 1000;
       char tb[20];
-      snprintf(tb, sizeof(tb), "00.00.0000 %02lu:%02lu:%02lu",
+      snprintf(tb, sizeof(tb), "01.01.2020 %02lu:%02lu:%02lu",
                (sec / 3600) % 24, (sec / 60) % 60, sec % 60);
       sys.datetimeStr = tb;
     }
@@ -406,9 +414,9 @@ void loop() {
   if (sys.wifiOk && webServerStarted) {
     webserver_handle();
     static unsigned long lastQueueProc = 0;
-    if (millis() - lastQueueProc >= 60000UL) {
+    if (now - lastQueueProc >= 60000UL) {
       queue_process();
-      lastQueueProc = millis();
+      lastQueueProc = now;
     }
   }
 
@@ -1354,7 +1362,7 @@ void show_splash_screen() {
   { unsigned long _t0=millis(); while(millis()-_t0<1200UL){app_wdt_reset();yield();} }
 
   if (sys.sensorReady) {
-    float current = scale_read_weight(scale, 10);
+    float current = scale_read_weight(scale, 5);
     if (!isnan(current)) {
       float diff = current - sys.lastSavedWeight;
       char buf[17];

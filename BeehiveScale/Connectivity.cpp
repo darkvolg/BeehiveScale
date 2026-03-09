@@ -297,6 +297,15 @@ static bool _tg_post(const char* message) {
 
   if (strncmp(useToken, "YOUR_", 5) == 0) return false;
 
+  // Validate token contains only safe URL characters
+  for (const char *p = useToken; *p; p++) {
+    char c = *p;
+    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ':' || c == '_' || c == '-')) {
+      Serial.println(F("[TG] Invalid token characters"));
+      return false;
+    }
+  }
+
 #if defined(ESP8266)
   BearSSL::WiFiClientSecure client;
 #else
@@ -378,7 +387,7 @@ bool ts_send(float weight, float tempC, float humidity, float rtcTempC) {
   HTTPClient http;
   http.setTimeout(HTTP_TIMEOUT_MS);
 
-  char url[256];
+  char url[180];
   snprintf(url, sizeof(url),
     "https://api.thingspeak.com/update?api_key=%s&field1=%.2f&field2=%.1f&field3=%.1f&field4=%.2f",
     TS_API_KEY, weight, tempC, humidity, rtcTempC);

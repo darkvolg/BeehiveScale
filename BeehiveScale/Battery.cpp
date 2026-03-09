@@ -37,6 +37,7 @@ float bat_voltage() {
 }
 
 int bat_percent() {
+  if (!_batInitialized) return 0;
   float v = _batSmoothed;
   // Кусочно-линейная аппроксимация LiPo кривой разряда
   float pct;

@@ -322,7 +322,13 @@ void log_append(const String &datetime, float weight, float tempC,
       Serial.println(F("[Log] Rename FAILED, skip rotation"));
     } else {
       File fn = _fs_open_write(LOG_FILE);
-      if (fn) { fn.print(CSV_HEADER); fn.close(); }
+      if (!fn) {
+        // New file creation failed — rename archive back to preserve data
+        _fs_rename(arcName, LOG_FILE);
+        Serial.println(F("[Log] New file creation FAILED, restored from archive"));
+      } else {
+        fn.print(CSV_HEADER); fn.close();
+      }
       Serial.print(F("[Log] Rotated → "));
       Serial.println(arcName);
     }
@@ -365,22 +371,28 @@ void log_clear() {
   // Удаляем ротированные архивы /log_YYMMDD_HHMM.csv
 #ifdef USE_SD_CARD
   if (!_fallback) {
+    // Collect filenames first, then delete (can't modify dir during iteration)
+    char toDelete[10][32];
+    int delCount = 0;
     File root = SD.open("/");
     if (root) {
       File entry;
-      while ((entry = root.openNextFile())) {
+      while ((entry = root.openNextFile()) && delCount < 10) {
         const char* n = entry.name();
         const char* base = (n && n[0] == '/') ? n+1 : n;
         if (base && strncmp(base, "log_", 4) == 0) {
           int len = strlen(base);
           if (len > 4 && strcmp(base + len - 4, ".csv") == 0) {
-            char path[32]; snprintf(path, sizeof(path), "/%s", base);
-            entry.close(); SD.remove(path); continue;
+            snprintf(toDelete[delCount], 32, "/%s", base);
+            delCount++;
           }
         }
         entry.close();
       }
       root.close();
+    }
+    for (int i = 0; i < delCount; i++) {
+      SD.remove(toDelete[i]);
     }
   } else
 #endif
@@ -489,6 +501,9 @@ size_t log_stream_csv_date(Stream &out, const String &date) {
         pos = 0;
         continue;
       }
+      // Skip duplicate headers from log rotation
+      if (pos > 8 && memcmp(buf, "datetime", 8) == 0) { pos = 0; continue; }
+      if (pos > 11 && memcmp(buf, "\xEF\xBB\xBF" "datetime", 11) == 0) { pos = 0; continue; }
       // Фильтр по дате: первые 10 символов строки
       if (hasFilter && (pos < 10 || memcmp(buf, cmpDate, 10) != 0)) {
         pos = 0;
@@ -658,8 +673,12 @@ DayStat log_day_stat(const String &todayDate) {
   }
   f.close();
 
-  if (s.count > 0) s.valid = true;
-  else { s.wMin=0; s.wMax=0; s.tMin=0; s.tMax=0; }
+  if (s.count > 0) {
+    s.valid = true;
+    // Reset temperature sentinels if no valid temps were found
+    if (s.tMin > 1e8f) s.tMin = 0;
+    if (s.tMax < -1e8f) s.tMax = 0;
+  } else { s.wMin=0; s.wMax=0; s.tMin=0; s.tMax=0; }
   return s;
 }
 
