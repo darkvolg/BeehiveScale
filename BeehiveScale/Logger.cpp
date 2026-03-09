@@ -82,6 +82,7 @@ static bool _fs_rename(const char *from, const char *to) {
         totalWritten += dst.write(buf, n);
       }
       yield();
+      ESP.wdtFeed();
     }
     src.close(); dst.close();
     if (totalRead != totalWritten) {
@@ -397,12 +398,18 @@ void log_clear() {
   } else
 #endif
   {
+    // Собираем имена файлов перед удалением (итерация + удаление одновременно небезопасна)
+    String delFiles[8];
+    int delCnt = 0;
     Dir dir = LittleFS.openDir("/");
-    while (dir.next()) {
+    while (dir.next() && delCnt < 8) {
       String fn = dir.fileName();
       if (fn.startsWith("log_") && fn.endsWith(".csv")) {
-        LittleFS.remove("/" + fn);
+        delFiles[delCnt++] = "/" + fn;
       }
+    }
+    for (int i = 0; i < delCnt; i++) {
+      LittleFS.remove(delFiles[i]);
     }
   }
   File f = _fs_open_write(LOG_FILE);
@@ -539,13 +546,13 @@ bool log_first_date(char *buf, size_t bufLen) {
   if (!f) return false;
   // пропустить заголовок
   int byteCount = 0;
-  while (f.available()) { int c = f.read(); if ((++byteCount & 1023) == 0) yield(); if (c == '\n' || c < 0) break; }
+  while (f.available()) { int c = f.read(); if ((++byteCount & 1023) == 0) { yield(); ESP.wdtFeed(); } if (c == '\n' || c < 0) break; }
   char ln[48];
   while (f.available()) {
     int pos = 0;
     while (f.available()) {
       int c = f.read();
-      if ((++byteCount & 1023) == 0) yield();
+      if ((++byteCount & 1023) == 0) { yield(); ESP.wdtFeed(); }
       if (c == '\n' || c == '\r' || c < 0) break;
       if (pos < (int)sizeof(ln) - 1) ln[pos++] = (char)c;
     }

@@ -1276,12 +1276,13 @@ static String _maskSecret(const char *src) {
   size_t len = strlen(src);
   if (len == 0) return "";
   if (len <= 8) return "****";
-  String out;
-  out.reserve(len);
+  char buf[64];
+  if (len >= sizeof(buf)) len = sizeof(buf) - 1;
   for (size_t i = 0; i < len; i++) {
-    out += (i < 4 || i >= len - 4) ? src[i] : '*';
+    buf[i] = (i < 4 || i >= len - 4) ? src[i] : '*';
   }
-  return out;
+  buf[len] = '\0';
+  return String(buf);
 }
 
 // ─── Uptime в читаемом виде ───────────────────────────────────────────────
@@ -1315,6 +1316,7 @@ static inline void _keepalive() {
 
 // Отправка PROGMEM-строки чанками (без копирования всего в heap)
 static void _sendProgmemChunked(const char *pgm) {
+  if (!pgm) { _srv.send(500, "text/plain", "No content"); return; }
   _srv.setContentLength(CONTENT_LENGTH_UNKNOWN);
   _srv.send(200, "text/html; charset=utf-8", "");
   size_t total = strlen_P(pgm);
@@ -1702,8 +1704,8 @@ static void _handleLog() {
       class ChunkStream : public Stream {
       public:
         WebServerCompat &srv;
-        char buf[64];
-        uint8_t pos;
+        char buf[256];
+        uint16_t pos;
         ChunkStream(WebServerCompat &s) : srv(s), pos(0) {}
         size_t write(uint8_t c) override {
           buf[pos++] = (char)c;
@@ -1961,7 +1963,8 @@ static void _handleBackupRestore() {
     const char* extAp = nullptr;
     if (doc.containsKey("sleepSec")) { uint32_t v = doc["sleepSec"].as<uint32_t>(); if (v >= 30 && v <= 86400) { extSleep = v; restored++; } }
     if (doc.containsKey("lcdBlSec")) { uint16_t v = doc["lcdBlSec"].as<uint16_t>(); if (v <= 3600) { extLcd = v; restored++; } }
-    if (doc.containsKey("apPass"))   { const char* p = doc["apPass"] | ""; if (strlen(p) >= 8 && strlen(p) <= 23 && strchr(p, '*') == NULL) { extAp = p; restored++; } }
+    static char apPassRestore[24];
+    if (doc.containsKey("apPass"))   { const char* p = doc["apPass"] | ""; if (strlen(p) >= 8 && strlen(p) <= 23 && strchr(p, '*') == NULL) { strncpy(apPassRestore, p, sizeof(apPassRestore)-1); apPassRestore[sizeof(apPassRestore)-1] = '\0'; extAp = apPassRestore; restored++; } }
     set_ext_all(extSleep, extLcd, extAp);
   }
   if (doc.containsKey("schedTimes")) {

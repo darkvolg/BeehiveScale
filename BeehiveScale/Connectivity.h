@@ -13,7 +13,7 @@
 
 // Настройки точки доступа (AP mode)
 #define AP_SSID          "BeehiveScale"
-#define AP_PASSWORD      "12345678"
+// AP password берётся из EEPROM через get_ap_pass()
 #define AP_CHANNEL       1
 #define AP_MAX_CLIENTS   4
 

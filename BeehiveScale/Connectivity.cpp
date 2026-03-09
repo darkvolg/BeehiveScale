@@ -210,6 +210,11 @@ void queue_add(float weight, float temp, float hum, float rtcTemp, const String&
 void queue_process() {
   if (!_wifi_active()) return;
   if (!_ensureFS()) return;
+  // Восстановление orphaned tmp-файла после неудачного rename
+  if (!LittleFS.exists(QUEUE_FILE) && LittleFS.exists("/queue_tmp.bin")) {
+    LittleFS.rename("/queue_tmp.bin", QUEUE_FILE);
+    Serial.println(F("[Queue] Recovered orphaned tmp file"));
+  }
   if (!LittleFS.exists(QUEUE_FILE)) return;
 
   File f = LittleFS.open(QUEUE_FILE, "r");

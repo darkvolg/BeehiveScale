@@ -291,7 +291,7 @@ void loop() {
   }
   static unsigned long lastTempRead   = 0;
   static unsigned long lastTsUpload   = 0;
-  static unsigned long lastTgReport   = 0;
+  static unsigned long lastTgReport   = millis();
   static unsigned long lastBatRead    = 0;
   static unsigned long lastLogWrite   = 0;
   static unsigned long lastSensorChk  = 0;  // фича 14: watchdog HX711
@@ -774,11 +774,11 @@ void display_screen_temp() {
   char buf[24];
   lcd.setCursor(0, 0);
   if (sys.tempData.valid) {
-    if (isnan(sys.rtcTempC)) snprintf(buf, sizeof(buf), "T:%4.1fC R: ---", sys.tempData.temperature);
-    else snprintf(buf, sizeof(buf), "T:%4.1fC R:%4.1fC", sys.tempData.temperature, sys.rtcTempC);
+    if (isnan(sys.rtcTempC)) snprintf(buf, sizeof(buf), "T:%.1fC  R:---", sys.tempData.temperature);
+    else snprintf(buf, sizeof(buf), "T:%.1fC R:%.1fC", sys.tempData.temperature, sys.rtcTempC);
   } else {
-    if (isnan(sys.rtcTempC)) snprintf(buf, sizeof(buf), "T: ---  R: ---");
-    else snprintf(buf, sizeof(buf), "T: ---  R:%4.1fC", sys.rtcTempC);
+    if (isnan(sys.rtcTempC)) snprintf(buf, sizeof(buf), "T:---   R:---");
+    else snprintf(buf, sizeof(buf), "T:---  R:%.1fC", sys.rtcTempC);
   }
   lcd_print_padded(lcd, buf);
 

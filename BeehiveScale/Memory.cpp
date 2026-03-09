@@ -279,6 +279,7 @@ void tg_commit() {
 
 void set_tg_all(const char *token, const char *chatid) {
   if (!_tgLoaded) tg_settings_init();
+  if (!token && !chatid) return;  // ничего не менять если оба NULL
   if (token) { strncpy(_tgToken, token, sizeof(_tgToken) - 1); _tgToken[sizeof(_tgToken) - 1] = '\0'; }
   if (chatid) { strncpy(_tgChatId, chatid, sizeof(_tgChatId) - 1); _tgChatId[sizeof(_tgChatId) - 1] = '\0'; }
   _tg_write();
