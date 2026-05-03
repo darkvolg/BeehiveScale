@@ -44,16 +44,26 @@
 | SD-карта | MISO | GPIO12 | D6 |
 | SD-карта | MOSI | GPIO13 | D7 |
 
+### Известные программные особенности
+- **GPIO1 (TX)** используется как SCK для HX711 → после `Serial.end()` Serial-вывод корраптит сигнал весов. Debug сообщения на этапе после `Serial.end()` отключены.
+- **GPIO3 (RX)** используется для DS18B20 → Serial-приём недоступен при подключённом термометре.
+- **GPIO0/GPIO15/GPIO16** — boot-strap пины, требуют внешних pull-резисторов (см. схему).
+
 ## Web API
-| Метод | Путь | Описание |
-|-------|------|----------|
-| GET | `/` | HTML страница (дашборд) |
-| GET | `/api/data` | JSON со всеми показаниями |
-| GET | `/api/log` | JSON-лог (до 100 записей) |
-| POST | `/api/tare` | Тарировка |
-| POST | `/api/save` | Сохранить эталон |
-| POST | `/api/settings` | Настройки (alertDelta, calibWeight, emaAlpha, sleep, backlight, AP pass) |
-| POST | `/api/ntp` | Синхронизация времени |
-| POST | `/api/reboot` | Перезагрузка |
-| GET | `/api/backup` | Скачать полный бэкап настроек (JSON) |
-| POST | `/api/backup/restore` | Восстановить настройки из JSON бэкапа |
+| Метод | Путь | Описание | Требует CSRF |
+|-------|------|----------|--------------|
+| GET | `/` | HTML страница (дашборд) | — |
+| GET | `/api/data` | JSON со всеми показаниями + CSRF-token | — |
+| GET | `/api/log` | JSON-лог (до 100 записей) | — |
+| POST | `/api/tare` | Тарировка | ✓ |
+| POST | `/api/save` | Сохранить эталон | ✓ |
+| POST | `/api/settings` | Настройки (alertDelta, calibWeight, emaAlpha, sleep, backlight, AP pass) | ✓ |
+| POST | `/api/ntp` | Синхронизация времени | ✓ |
+| POST | `/api/reboot` | Перезагрузка | ✓ |
+| GET | `/api/backup` | Скачать полный бэкап настроек (JSON) | — |
+| POST | `/api/backup/restore` | Восстановить настройки из JSON бэкапа | ✓ |
+| POST | `/api/auth/password` | Сменить admin/OTA пароль | ✓ |
+| POST | `/api/log/clear` | Очистить лог на SD | ✓ |
+| POST | `/api/wifi/settings` | Wi-Fi конфиг | ✓ |
+
+Все POST защищены Basic Auth + CSRF токеном в заголовке `X-CSRF-Token` (получается в `/api/data`).

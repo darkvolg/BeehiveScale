@@ -1,4 +1,6 @@
 #include "WebServerModule.h"
+#include "Version.h"
+#include <stdint.h>   // INT32_MIN используется в _handleBackupRestore
 #if defined(ESP8266)
 #include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
@@ -28,12 +30,56 @@ static WebServerCompat _srv(WEB_SERVER_PORT);
 static WebData    _wd;
 static WebActions _wa;
 
-// ─── Basic Auth проверка ──────────────────────────────────────────────────
+// ─── CSRF-токен (32 hex-символа, ротируется при каждой перезагрузке) ─────
+static char _csrfToken[33] = {0};
+static void _csrf_init() {
+  if (_csrfToken[0] != '\0') return;
+#if defined(ESP8266) || defined(ESP32)
+  uint32_t r1 = ESP.getCycleCount() ^ micros();
+  uint32_t r2 = millis() ^ (uint32_t)random(0x7FFFFFFF);
+#else
+  uint32_t r1 = micros();
+  uint32_t r2 = millis();
+#endif
+  snprintf(_csrfToken, sizeof(_csrfToken), "%08lx%08lx%08lx%08lx",
+           (unsigned long)r1, (unsigned long)r2,
+           (unsigned long)(r1 ^ 0xDEADBEEF), (unsigned long)(r2 ^ 0xCAFEBABE));
+}
+
+// ─── Basic Auth проверка (credentials из EEPROM) ─────────────────────────
 static bool _auth() {
-  if (!_srv.authenticate(WEB_ADMIN_USER, WEB_ADMIN_PASS)) {
+  char u[24], p[32];
+  get_admin_user(u, sizeof(u));
+  get_admin_pass(p, sizeof(p));
+  if (!_srv.authenticate(u, p)) {
     _srv.requestAuthentication();
     return false;
   }
+  return true;
+}
+
+// ─── CSRF проверка для state-changing запросов (POST) ────────────────────
+// Токен ожидается в заголовке X-CSRF-Token. Клиент получает его через /api/data.
+static bool _csrf_check() {
+  if (_csrfToken[0] == '\0') _csrf_init();
+  String hdr = _srv.header("X-CSRF-Token");
+  if (hdr.length() != 32 || strcmp(hdr.c_str(), _csrfToken) != 0) {
+    _srv.send(403, "application/json",
+              "{\"ok\":false,\"msg\":\"CSRF token missing or invalid\"}");
+    return false;
+  }
+  return true;
+}
+
+// ─── Rate limit для дорогих GET-эндпоинтов (1 сек) ───────────────────────
+static bool _rate_limit(unsigned long &lastReq, unsigned long minMs) {
+  unsigned long now = millis();
+  if (lastReq != 0 && (now - lastReq) < minMs) {
+    _srv.send(429, "application/json",
+              "{\"ok\":false,\"msg\":\"Rate limited\"}");
+    return false;
+  }
+  lastReq = now;
   return true;
 }
 
@@ -226,9 +272,13 @@ input[type=checkbox]{width:auto}
 
 <div class="refresh-bar"><div class="refresh-fill" id="rbar" style="width:100%"></div></div>
 
+<div id="creds-warn" style="display:none;background:#3b1c18;border-bottom:2px solid var(--red);padding:10px 16px;text-align:center;color:var(--red);font-size:13px;letter-spacing:1px">
+  ⚠ Используются стандартные учётные данные (admin/beehive). Смените пароль в разделе <a href="#" onclick="nav('wifi');return false" style="color:var(--amber);text-decoration:underline">Wi-Fi → Пароли и доступ</a>.
+</div>
+
 <div class="hdr">
   <div class="hdr-inner">
-    <div class="hdr-logo">🐝 BeehiveScale</div>
+    <div class="hdr-logo">🐝 BeehiveScale <span id="fw-ver" style="font-size:12px;color:var(--text2);font-weight:400;margin-left:8px"></span></div>
   </div>
   <div class="hdr-right">
     <div class="hdr-sub" style="margin-right:16px">LIVE MONITOR · ESP8266</div>
@@ -264,7 +314,7 @@ input[type=checkbox]{width:auto}
     <div class="card blue">
       <div class="card-title">🌡 Температура / Влажность</div>
       <div class="val-big" id="t-val">--<span class="val-unit">°C</span></div>
-      <div class="val-sub">Влажность: <b id="h-val">--</b>% &nbsp;|&nbsp; RTC: <b id="rtc-val">--</b>°C</div>
+      <div class="val-sub">RTC: <b id="rtc-val">--</b>°C</div>
       <div class="gauge-wrap">
         <div class="gauge"><div class="gauge-fill" id="t-gauge" style="width:0%;background:var(--blue)"></div></div>
         <div class="gauge-lbl" id="t-gpct">--°C</div>
@@ -406,7 +456,6 @@ input[type=checkbox]{width:auto}
           <label class="exp-col-item"><input type="checkbox" id="col-dt" checked> Дата/время</label>
           <label class="exp-col-item"><input type="checkbox" id="col-w"  checked> Вес (кг)</label>
           <label class="exp-col-item"><input type="checkbox" id="col-t"  checked> Температура (°C)</label>
-          <label class="exp-col-item"><input type="checkbox" id="col-h"> Влажность (%)</label>
           <label class="exp-col-item"><input type="checkbox" id="col-bat"> Батарея (В)</label>
         </div>
       </div>
@@ -509,12 +558,35 @@ input[type=checkbox]{width:auto}
 
       <!-- Пароль веб-интерфейса -->
       <div class="pass-section">
-        <div style="font-size:13px;color:var(--text2);margin-bottom:8px;font-weight:600">Веб-авторизация</div>
-        <div style="font-size:13px;color:var(--text3);line-height:1.8">
-          Логин: <b style="color:var(--text)">admin</b><br>
-          Пароль: <b style="color:var(--text)">beehive</b> (по умолчанию)<br>
-          <span style="color:#3d5030">Изменить пароль веб-интерфейса можно только в прошивке:<br>
-          файл <code style="color:var(--amber)">WebServerModule.h</code> → <code style="color:var(--amber)">WEB_ADMIN_PASS</code></span>
+        <div style="font-size:13px;color:var(--text2);margin-bottom:8px;font-weight:600">Веб-авторизация (admin)</div>
+        <div class="form-row" style="margin-bottom:6px">
+          <label>Логин (оставьте пустым чтобы не менять)</label>
+          <input type="text" id="web-user-new" placeholder="admin" maxlength="23" autocomplete="off">
+        </div>
+        <div class="form-row" style="margin-bottom:6px">
+          <label>Новый пароль (6-31)</label>
+          <input type="password" id="web-pass-new" placeholder="********" maxlength="31" autocomplete="new-password">
+        </div>
+        <div class="form-row" style="margin-bottom:6px">
+          <label>Повтор пароля</label>
+          <input type="password" id="web-pass-confirm" placeholder="********" maxlength="31" autocomplete="new-password">
+        </div>
+        <button class="btn btn-amber" onclick="saveWebAuth()">🔑 Сменить пароль web</button>
+        <div style="font-size:13px;color:var(--text3);margin-top:6px">
+          После смены браузер запросит новый логин/пароль при первом запросе.
+        </div>
+      </div>
+
+      <!-- OTA пароль -->
+      <div class="pass-section">
+        <div style="font-size:13px;color:var(--text2);margin-bottom:8px;font-weight:600">Пароль OTA (прошивка по воздуху)</div>
+        <div class="form-row" style="margin-bottom:6px">
+          <label>Новый пароль OTA (6-31)</label>
+          <input type="password" id="ota-pass-new" placeholder="********" maxlength="31" autocomplete="new-password">
+        </div>
+        <button class="btn btn-amber" onclick="saveOtaPass()">🔑 Сменить OTA пароль</button>
+        <div style="font-size:13px;color:var(--text3);margin-top:6px">
+          Вступит в силу после перезагрузки.
         </div>
       </div>
     </div>
@@ -528,7 +600,7 @@ input[type=checkbox]{width:auto}
     <div class="card">
       <div class="card-title">⚙ Параметры устройства</div>
       <div class="form-row"><label>Порог тревоги Telegram (кг, 0.1–10)</label><input type="number" id="cfg-alert" step="0.1" min="0.1" max="10" placeholder="0.5"></div>
-      <div class="form-row"><label>Эталонный груз калибровки (г, 100–5000)</label><input type="number" id="cfg-calib" step="100" min="100" max="5000" placeholder="1000"></div>
+      <div class="form-row"><label>Эталонный груз калибровки (г, 100–50000)</label><input type="number" id="cfg-calib" step="100" min="100" max="50000" placeholder="1000"></div>
       <div class="form-row"><label>EMA сглаживание α (0.05–0.9)</label><input type="number" id="cfg-ema" step="0.05" min="0.05" max="0.9" placeholder="0.1"></div>
       <div class="form-row"><label>Deep Sleep интервал (сек, 30–86400)</label><input type="number" id="cfg-sleep" step="60" min="30" max="86400" placeholder="900"></div>
       <div class="form-row"><label>Расписание замеров (HH:MM через пробел, до 8 времён)</label><input type="text" id="cfg-sched" placeholder="08:00 14:00 20:00" maxlength="60"></div>
@@ -681,9 +753,19 @@ let _periodH = 1;
 let _serVisible = {w:true, t:true, b:true};
 let _wizStep = 0;
 let _wifiMode = 0;
+let _csrfTok = '';       // обновляется через /api/data
 // Данные для тултипов (по серии)
 let _tipPts = {};
 function esc(s){var d=document.createElement('div');d.textContent=String(s);return d.innerHTML;}
+// Обёртка fetch с автоматическим X-CSRF-Token для POST
+function apiFetch(url, opts){
+  opts = opts || {};
+  opts.headers = opts.headers || {};
+  if ((opts.method||'GET').toUpperCase() !== 'GET' && _csrfTok){
+    opts.headers['X-CSRF-Token'] = _csrfTok;
+  }
+  return fetch(url, opts);
+}
 
 // ── Nav ──────────────────────────────────────────────────────────────
 function nav(id) {
@@ -725,7 +807,7 @@ function toast(msg, err) {
 // ── API ───────────────────────────────────────────────────────────────
 function doApi(url) {
   const method = (url.includes('/data')||(url.includes('/log')&&!url.includes('/clear'))||url.includes('/config')||url.includes('/daystat')||url.endsWith('/backup')) ? 'GET' : 'POST';
-  return fetch(url,{method}).then(r=>r.json()).then(d=>{
+  return apiFetch(url,{method}).then(r=>r.json()).then(d=>{
     toast(d.msg||(d.ok?'OK':'Ошибка'), !d.ok); return d;
   }).catch(()=>toast('Нет связи',true));
 }
@@ -738,6 +820,9 @@ function fetchData() {
 }
 
 function updDash(d) {
+  if (d && d.csrf) _csrfTok = d.csrf;
+  if (d && d.credsDefault) showCredsWarning();
+  if (d && d.fw) { const fv=document.getElementById('fw-ver'); if (fv && !fv.textContent) fv.textContent='v'+d.fw; }
   const w = parseFloat(d.weight)||0;
   _curWeight = w;
   setText('w-val', w.toFixed(3)+'<span class="val-unit">кг</span>', true);
@@ -756,7 +841,6 @@ function updDash(d) {
     setText('t-val','---<span class="val-unit">°C</span>',true);
     setGauge('t-gauge','t-gpct', 0, '---', '°C');
   }
-  setText('h-val', parseFloat(d.hum||0).toFixed(0));
   setText('rtc-val', rtcT.toFixed(1));
 
   const bv=parseFloat(d.batV||0), bp=parseFloat(d.batPct||0);
@@ -956,14 +1040,14 @@ function drawLineSvg(svg,pts,key,color,W,H,L,R,T,B,showAxes) {
     const xCount=Math.min(7,pts.length);
     for(let n=0;n<xCount;n++){
       const i=Math.round(n*(pts.length-1)/(xCount-1));
-      const x=xS(i),lbl=pts[i].dt?pts[i].dt.substring(11,16):'';
+      const x=xS(i),lbl=pts[i].dt?esc(pts[i].dt.substring(11,16)):'';
       const a=n===0?'start':n===xCount-1?'end':'middle';
       html+=`<line x1="${x.toFixed(1)}" y1="${T}" x2="${x.toFixed(1)}" y2="${T+pH}" stroke="#181d18" stroke-dasharray="3,3" stroke-width="1"/>`;
       html+=`<text x="${x.toFixed(1)}" y="${H-B+16}" text-anchor="${a}" fill="#506040" font-size="11">${lbl}</text>`;
     }
     // date labels at edges — под осью X, не наложение на время
-    const d0=pts[0].dt?pts[0].dt.substring(0,10):'';
-    const d1=pts[pts.length-1].dt?pts[pts.length-1].dt.substring(0,10):'';
+    const d0=pts[0].dt?esc(pts[0].dt.substring(0,10)):'';
+    const d1=pts[pts.length-1].dt?esc(pts[pts.length-1].dt.substring(0,10)):'';
     if(d0) html+=`<text x="${L}" y="${H-B+28}" text-anchor="start" fill="#3d5030" font-size="9">${d0}</text>`;
     if(d1&&d1!==d0) html+=`<text x="${W-R}" y="${H-B+28}" text-anchor="end" fill="#3d5030" font-size="9">${d1}</text>`;
   }
@@ -1034,7 +1118,6 @@ function getExpData() {
   if(document.getElementById('col-dt').checked)  cols.push({k:'dt',h:'Дата/время'});
   if(document.getElementById('col-w').checked)   cols.push({k:'w',h:'Вес, кг'});
   if(document.getElementById('col-t').checked)   cols.push({k:'t',h:'Темп, °C'});
-  if(document.getElementById('col-h').checked)   cols.push({k:'h',h:'Влажность, %'});
   if(document.getElementById('col-bat').checked) cols.push({k:'b',h:'Батарея, В'});
   return {data,cols};
 }
@@ -1103,7 +1186,7 @@ function restoreBackup(inp){
     try{json=JSON.parse(e.target.result);}catch(ex){toast('Ошибка: не JSON',true);inp.value='';return;}
     if(json._type!=='BeehiveScale_backup'){toast('Неверный формат бэкапа',true);inp.value='';return;}
     if(!confirm('Восстановить ВСЕ настройки из бэкапа?\n(калибровка, WiFi, Telegram, параметры)\n\nТекущие настройки будут перезаписаны!')){inp.value='';return;}
-    fetch('/api/backup/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(json)})
+    apiFetch('/api/backup/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(json)})
       .then(r=>r.json()).then(d=>{toast(d.msg||'OK',!d.ok);if(d.ok)loadConfig();}).catch(()=>toast('Нет связи',true));
   };
   reader.readAsText(file);
@@ -1141,7 +1224,7 @@ function saveSettings(){
   if(!isNaN(b)) body.lcdBlSec=b;
   const sched=(g('cfg-sched').value||'').trim();
   body.schedTimes=sched.length>0?sched.split(/\s+/).filter(t=>/^\d{1,2}:\d{2}$/.test(t)):[];
-  fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  apiFetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>toast(d.msg||'OK',!d.ok)).catch(()=>toast('Нет связи',true));
 }
 
@@ -1149,7 +1232,7 @@ function saveSettings(){
 function saveTelegram(){
   const ri=parseInt(document.getElementById('tg-report-int').value||'360');
   const body={token:document.getElementById('tg-token').value,chatId:document.getElementById('tg-chatid').value,reportInt:isNaN(ri)?360:Math.max(0,Math.min(ri,10080))};
-  fetch('/api/tg/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  apiFetch('/api/tg/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>toast(d.msg||'OK',!d.ok)).catch(()=>toast('Нет связи',true));
 }
 
@@ -1171,7 +1254,7 @@ function saveWifi(){
     body.wifiSsid=ssid;
     if(pass.length>0) body.wifiPass=pass;
   }
-  fetch('/api/wifi/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  apiFetch('/api/wifi/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>{
       toast(d.msg||'OK',!d.ok);
       if(d.ok) setTimeout(()=>toast('Устройство перезагружается…'),2500);
@@ -1196,10 +1279,44 @@ function saveApPass(){
   if(np.length<8||np.length>23){toast('Пароль: 8–23 символа',true);return;}
   if(np!==cp){toast('Пароли не совпадают',true);return;}
   const body={apPass:np};
-  fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  apiFetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>{
       toast(d.msg||'OK',!d.ok);
       if(d.ok){document.getElementById('ap-pass-new').value='';document.getElementById('ap-pass-confirm').value='';}
+    }).catch(()=>toast('Нет связи',true));
+}
+
+function showCredsWarning(){
+  var el=document.getElementById('creds-warn');
+  if(el) el.style.display='block';
+}
+
+function saveWebAuth(){
+  const u=document.getElementById('web-user-new').value.trim();
+  const p=document.getElementById('web-pass-new').value;
+  const c=document.getElementById('web-pass-confirm').value;
+  if(p.length<6||p.length>31){toast('Пароль: 6-31 символ',true);return;}
+  if(p!==c){toast('Пароли не совпадают',true);return;}
+  if(!confirm('Сменить логин/пароль веб-интерфейса?\nБраузер потребует переавторизацию.')) return;
+  const body={pass:p};
+  if(u.length>0) body.user=u;
+  apiFetch('/api/auth/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(r=>r.json()).then(d=>{
+      toast(d.msg||'OK',!d.ok);
+      if(d.ok){
+        ['web-user-new','web-pass-new','web-pass-confirm'].forEach(id=>document.getElementById(id).value='');
+        setTimeout(()=>location.reload(),1500);
+      }
+    }).catch(()=>toast('Нет связи',true));
+}
+
+function saveOtaPass(){
+  const p=document.getElementById('ota-pass-new').value;
+  if(p.length<6||p.length>31){toast('OTA пароль: 6-31 символ',true);return;}
+  apiFetch('/api/auth/ota',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pass:p})})
+    .then(r=>r.json()).then(d=>{
+      toast(d.msg||'OK',!d.ok);
+      if(d.ok) document.getElementById('ota-pass-new').value='';
     }).catch(()=>toast('Нет связи',true));
 }
 
@@ -1233,7 +1350,7 @@ function applyCalib(){
   if(!isNaN(cf)) body.calibFactor=cf;
   if(ofs!=='') body.offset=parseInt(ofs);
   if(Object.keys(body).length===0){toast('Введите значение Cal.Factor',true);return;}
-  fetch('/api/calib/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  apiFetch('/api/calib/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>{toast(d.msg||'OK',!d.ok);if(d.ok)fetchData();}).catch(()=>toast('Нет связи',true));
 }
 
@@ -1271,17 +1388,17 @@ setTimeout(autoRefresh,REFRESH);
 
 // Настройки читаются/записываются через Memory.h (web_get_*/save_web_settings)
 
-// Маскировка секретов: показывает первые 4 и последние 4 символа, остальное — звёздочки
+// Маскировка секретов: XXXX***YYYY — всегда 4 первых + 4 последних символа реального src,
+// середина ровно 3 звёздочки. Безопасно для произвольно длинных строк (TG-токен ~46 байт).
 static String _maskSecret(const char *src) {
+  if (!src) return "";
   size_t len = strlen(src);
   if (len == 0) return "";
   if (len <= 8) return "****";
-  char buf[64];
-  if (len >= sizeof(buf)) len = sizeof(buf) - 1;
-  for (size_t i = 0; i < len; i++) {
-    buf[i] = (i < 4 || i >= len - 4) ? src[i] : '*';
-  }
-  buf[len] = '\0';
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%c%c%c%c***%c%c%c%c",
+           src[0], src[1], src[2], src[3],
+           src[len-4], src[len-3], src[len-2], src[len-1]);
   return String(buf);
 }
 
@@ -1380,13 +1497,15 @@ static void _handleConfig() {
 
 static void _handleData() {
   if (!_auth()) return;
+  static unsigned long _lastDataReq = 0;
+  if (!_rate_limit(_lastDataReq, 1000UL)) return;
   _keepalive();  // поллинг — не сбрасывать подсветку
+  if (_csrfToken[0] == '\0') _csrf_init();
   StaticJsonDocument<512> doc;
   doc["weight"]   = *_wd.weight;
   doc["ref"]      = *_wd.lastSavedWeight;
   doc["prev"]     = *_wd.prevWeight;
   doc["temp"]     = *_wd.tempC;
-  doc["hum"]      = *_wd.humidity;
   doc["rtcT"]     = *_wd.rtcTempC;
   doc["sensor"]   = *_wd.sensorReady;
   doc["wifi"]     = *_wd.wifiOk;
@@ -1401,6 +1520,9 @@ static void _handleData() {
   doc["sdFree"]     = (unsigned long)log_free_space();
   doc["sdFallback"] = log_using_fallback();
   doc["sdOk"]       = log_fs_ok() ? 1 : 0;
+  doc["csrf"]         = _csrfToken;
+  doc["credsDefault"] = credentials_is_default();
+  doc["fw"]           = FW_VERSION;
 #if defined(ESP32) || defined(ESP8266)
   doc["heap"]     = ESP.getFreeHeap();
 #else
@@ -1412,6 +1534,7 @@ static void _handleData() {
 
 static void _handleTare() {
   if (!_auth()) return;
+  if (!_csrf_check()) return;
   _activity();
   if (_wa.doTare) { _wa.doTare(); _sendJson(true, "Тарировка выполнена"); }
   else _sendJson(false, "Нет обработчика");
@@ -1419,6 +1542,7 @@ static void _handleTare() {
 
 static void _handleSave() {
   if (!_auth()) return;
+  if (!_csrf_check()) return;
   _activity();
   if (_wa.doSave) { _wa.doSave(); _sendJson(true, "Эталон сохранён"); }
   else _sendJson(false, "Нет обработчика");
@@ -1430,6 +1554,7 @@ static String _buildBackupJson(bool masked = false);
 
 static void _handleSettings() {
   if (!_auth()) return;
+  if (!_csrf_check()) return;
   if (_srv.method() != HTTP_POST) { _sendJson(false,"Только POST"); return; }
   _activity();
   StaticJsonDocument<512> doc;
@@ -1453,10 +1578,10 @@ static void _handleSettings() {
 
   if (doc.containsKey("calibWeight")) {
     float val = doc["calibWeight"].as<float>();
-    if (val >= 100.0f && val <= 5000.0f) {
+    if (val >= 100.0f && val <= 50000.0f) {
       newCalib = val;
     } else {
-      _sendJson(false, "calibWeight должен быть от 100 до 5000 г");
+      _sendJson(false, "calibWeight должен быть от 100 до 50000 г");
       return;
     }
   }
@@ -1485,7 +1610,8 @@ static void _handleSettings() {
     if (val <= 3600) { newLcdBlSec = val; hasLcdBlSec = true; }
     else { _sendJson(false, "lcdBlSec: 0–3600"); return; }
   }
-  static char apPassBuf[24];
+  char apPassBuf[24];  // локальная — безопасно при параллельных запросах (пункт 20)
+  apPassBuf[0] = '\0';
   if (doc.containsKey("apPass")) {
     const char* pass = doc["apPass"].as<const char*>();
     if (pass && strlen(pass) >= 8 && strlen(pass) <= 23) {
@@ -1528,16 +1654,19 @@ static void _handleSettings() {
 
 static void _handleReboot() {
   if (!_auth()) return;
+  if (!_csrf_check()) return;
+  // Отправляем JSON целиком и даём TCP время выпихнуть данные до сокета клиента.
+  // client().stop() здесь ЗАПРЕЩЁН — обрубит сокет до того как клиент прочитает body.
   _sendJson(true, "Перезагрузка...");
   _srv.client().flush();
-  _srv.client().stop();
-  delay(500);
+  delay(200);
   ESP.restart();
 }
 
 // Обработчик NTP синхронизации
 static void _handleNtp() {
   if (!_auth()) return;
+  if (!_csrf_check()) return;
   _activity();
   if (_srv.method() != HTTP_POST) { _sendJson(false,"Только POST"); return; }
 
@@ -1565,6 +1694,7 @@ static void _handleWifi() {
 // ─── /api/tg/settings  POST — сохранить Telegram токен и chat_id ─────────
 static void _handleTgSettings() {
   if (!_auth()) return;
+  if (!_csrf_check()) return;
   _activity();
   if (_srv.method() != HTTP_POST) { _sendJson(false,"Только POST"); return; }
   StaticJsonDocument<256> doc;
@@ -1592,17 +1722,38 @@ static void _handleTgSettings() {
   _sendJson(true, "Telegram настройки сохранены");
 }
 
-// ─── /api/tg/test  POST — отправить тестовое сообщение ──────────────────
+// ─── /api/tg/test  POST — отправить тестовое/приветственное сообщение ────
 static void _handleTgTest() {
   if (!_auth()) return;
+  if (!_csrf_check()) return;
   _activity();
-  bool ok = tg_send_message("BeehiveScale: тестовое сообщение. Весы работают!");
+
+  // Справка: что бот присылает и как настроить
+  char info[512];
+  uint32_t rptMin = get_tg_report_interval_min();
+  float alertKg = web_get_alert_delta();
+  snprintf(info, sizeof(info),
+    "<b>" FW_NAME " v" FW_VERSION "</b>\n\n"
+    "<b>Chto prihodit:</b>\n"
+    "- <b>Otchet</b> — ves, temp, vlazhnost (kazhdye %lu min%s)\n"
+    "- <b>Trevoga</b> — pri izmenenii vesa na %.1f+ kg (kuldaun 30 min)\n\n"
+    "<b>Veb-panel: http://192.168.4.1</b>\n"
+    "- Podklyuchenie k Wi-Fi routeru\n"
+    "- Interval otchetov, porog trevogi\n"
+    "- Raspisanie zamerov\n"
+    "- Grafiki, eksport CSV, kalibrovka",
+    (unsigned long)(rptMin ? rptMin : 0),
+    rptMin ? "" : ", otkl",
+    alertKg);
+
+  bool ok = tg_send_message(info);
   _sendJson(ok, ok ? "Сообщение отправлено" : "Ошибка отправки (проверьте token/chat_id)");
 }
 
 // ─── /api/calib/set  POST — установить cal.factor и offset ───────────────
 static void _handleCalibSet() {
   if (!_auth()) return;
+  if (!_csrf_check()) return;
   _activity();
   if (_srv.method() != HTTP_POST) { _sendJson(false,"Только POST"); return; }
   StaticJsonDocument<128> doc;
@@ -1628,6 +1779,7 @@ static void _handleCalibSet() {
 // ─── /api/wifi/settings  POST — сохранить режим WiFi и credentials ──────
 static void _handleWifiSettings() {
   if (!_auth()) return;
+  if (!_csrf_check()) return;
   _activity();
   if (_srv.method() != HTTP_POST) { _sendJson(false,"Только POST"); return; }
   StaticJsonDocument<256> doc;
@@ -1650,7 +1802,7 @@ static void _handleWifiSettings() {
   log_save_backup(_buildBackupJson());
   _sendJson(true, "WiFi настройки сохранены, перезагрузка...");
   _srv.client().flush();
-  delay(300);
+  delay(200);
   ESP.restart();
 }
 
@@ -1658,9 +1810,53 @@ static void _handleNotFound() {
   _srv.send(404, "text/plain", "Not found");
 }
 
+// ─── /api/auth/password  POST — смена admin login/пароля ─────────────────
+// Body: { "user": "newlogin", "pass": "newpass" }  (user опционален)
+static void _handleAuthPassword() {
+  if (!_auth()) return;
+  if (!_csrf_check()) return;
+  if (_srv.method() != HTTP_POST) { _sendJson(false, "Только POST"); return; }
+  _activity();
+  StaticJsonDocument<192> doc;
+  DeserializationError err = deserializeJson(doc, _srv.arg("plain"));
+  if (err) { _sendJson(false, "Ошибка JSON"); return; }
+  const char* u = doc["user"].as<const char*>();
+  const char* p = doc["pass"].as<const char*>();
+  if (!p || strlen(p) < 6 || strlen(p) > 31) {
+    _sendJson(false, "Пароль: 6-31 символ");
+    return;
+  }
+  if (u && (strlen(u) < 3 || strlen(u) > 23)) {
+    _sendJson(false, "Логин: 3-23 символа");
+    return;
+  }
+  set_admin_credentials(u, p);
+  _sendJson(true, "Учётные данные обновлены. Переавторизация при следующем запросе.");
+}
+
+// ─── /api/auth/ota  POST — смена OTA пароля ──────────────────────────────
+static void _handleAuthOta() {
+  if (!_auth()) return;
+  if (!_csrf_check()) return;
+  if (_srv.method() != HTTP_POST) { _sendJson(false, "Только POST"); return; }
+  _activity();
+  StaticJsonDocument<128> doc;
+  DeserializationError err = deserializeJson(doc, _srv.arg("plain"));
+  if (err) { _sendJson(false, "Ошибка JSON"); return; }
+  const char* p = doc["pass"].as<const char*>();
+  if (!p || strlen(p) < 6 || strlen(p) > 31) {
+    _sendJson(false, "OTA пароль: 6-31 символ");
+    return;
+  }
+  set_ota_pass(p);
+  _sendJson(true, "OTA пароль сохранён. Вступит в силу после перезагрузки.");
+}
+
 // ─── /api/log  GET — скачать CSV-лог (опционально: ?date=YYYY-MM-DD) ─────
 static void _handleLog() {
   if (!_auth()) return;
+  static unsigned long _lastLogCsvReq = 0;
+  if (!_rate_limit(_lastLogCsvReq, 1000UL)) return;
   _activity();
   if (!log_exists()) {
     _srv.send(404, "text/plain", "Log not found");
@@ -1811,17 +2007,44 @@ static void _handleDayStat() {
 // ─── /api/log/clear  POST — очистить лог ─────────────────────────────────
 static void _handleLogClear() {
   if (!_auth()) return;
+  if (!_csrf_check()) return;
   _activity();
   log_clear();
   _sendJson(true, "Лог очищен");
 }
 
 // ─── /api/log/json  GET — лог в JSON ─────────────────────────────────────
+// Стримит прямо в HTTP-ответ через ChunkStream — без аккумуляции 4КБ String в heap.
 static void _handleLogJson() {
   if (!_auth()) return;
-  _keepalive();  // GET-поллинг — не сбрасывать подсветку
-  String json = log_to_json(50);
-  _srv.send(200, "application/json", json);
+  static unsigned long _lastLogReq = 0;
+  if (!_rate_limit(_lastLogReq, 1000UL)) return;
+  _keepalive();
+  _srv.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  _srv.send(200, "application/json", "");
+  class JsonChunkStream : public Stream {
+  public:
+    WebServerCompat &srv;
+    char buf[128];
+    uint16_t pos;
+    JsonChunkStream(WebServerCompat &s) : srv(s), pos(0) {}
+    size_t write(uint8_t c) override {
+      buf[pos++] = (char)c;
+      if (pos >= sizeof(buf)) flush_buf();
+      return 1;
+    }
+    size_t write(const uint8_t *b, size_t s) override {
+      for (size_t i = 0; i < s; i++) write(b[i]);
+      return s;
+    }
+    void flush_buf() { if (pos > 0) { srv.sendContent(buf, pos); pos = 0; } }
+    int available() override { return 0; }
+    int read() override { return -1; }
+    int peek() override { return -1; }
+    void flush() override { flush_buf(); }
+  } cs(_srv);
+  log_stream_json(cs, 50);
+  cs.flush();
 }
 
 // ─── /api/backup  GET — полный бэкап настроек EEPROM ──────────────────────
@@ -1883,20 +2106,32 @@ static String _buildBackupJson(bool masked) {
 
 static void _handleBackup() {
   if (!_auth()) return;
-  _keepalive();  // GET-запрос — не сбрасывать таймер авто-сна
-  // Сначала сохраняем полный бэкап на SD (с секретами), потом отправляем маскированный.
-  // Так два больших String не сосуществуют в heap одновременно.
+  _keepalive();
+  // Стримим чанками: один DynamicJsonDocument пишется в WiFiClient через
+  // _srv.sendContent-обёртку, без промежуточного String (экономия ~2КБ heap).
+  // Неманскированный вариант сохраняем на SD отдельным вызовом — один раз в heap.
   log_save_backup(_buildBackupJson(false));
-  {
-    String json = _buildBackupJson(true);
-    _srv.sendHeader("Content-Disposition", "attachment; filename=\"beehive_backup.json\"");
-    _srv.send(200, "application/json", json);
+
+  _srv.sendHeader("Content-Disposition", "attachment; filename=\"beehive_backup.json\"");
+  _srv.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  _srv.send(200, "application/json", "");
+
+  String json = _buildBackupJson(true);
+  const size_t CHUNK = 256;
+  size_t total = json.length();
+  size_t sent = 0;
+  while (sent < total) {
+    size_t n = (total - sent > CHUNK) ? CHUNK : (total - sent);
+    _srv.sendContent(json.c_str() + sent, n);
+    sent += n;
+    yield();
   }
 }
 
 // ─── /api/backup/restore  POST — восстановление из JSON бэкапа ───────────
 static void _handleBackupRestore() {
   if (!_auth()) return;
+  if (!_csrf_check()) return;
   _activity();
   if (_srv.method() != HTTP_POST) { _sendJson(false, "Только POST"); return; }
 
@@ -1913,48 +2148,50 @@ static void _handleBackupRestore() {
 
   int restored = 0;
 
-  // Калибровка — используем функции Memory.cpp (mark_eeprom_valid + commit)
-  if (doc.containsKey("calibFactor")) {
-    float cf = doc["calibFactor"].as<float>();
-    if (cf >= 100.0f && cf <= 100000.0f) {
-      save_calibration(cf);  // EEPROM.put + mark_eeprom_valid + commit
-      if (_wa.doSetCalibFactor) _wa.doSetCalibFactor(cf);
-      restored++;
+  // Калибровка: собираем все поля и делаем ОДИН commit через save_calibration_block()
+  // вместо 5 отдельных — экономия flash wear + WDT safe.
+  {
+    float cf = NAN; long ofs = INT32_MIN; float w = NAN; float pw = NAN; long po = INT32_MIN;
+    if (doc.containsKey("calibFactor")) {
+      float v = doc["calibFactor"].as<float>();
+      if (v >= 100.0f && v <= 100000.0f) { cf = v; restored++; }
     }
-  }
-  if (doc.containsKey("offset")) {
-    long ofs = doc["offset"].as<long>();
-    save_offset(ofs);  // EEPROM.put + mark_eeprom_valid + commit
-    if (_wa.doSetCalibOffset) _wa.doSetCalibOffset(ofs);
-    restored++;
-  }
-  if (doc.containsKey("weight")) {
-    float w = doc["weight"].as<float>();
-    if (w >= 0.0f && w <= 500.0f) {
-      save_weight(*_wd.lastSavedWeight, w);  // lastWeight=w, EEPROM.put + commit
-      restored++;
+    if (doc.containsKey("offset")) {
+      ofs = doc["offset"].as<long>();
+      if (ofs > -16777216L && ofs < 16777216L) restored++; else ofs = INT32_MIN;
     }
-  }
-  if (doc.containsKey("prevWeight")) {
-    float pw = doc["prevWeight"].as<float>();
-    if (pw >= 0.0f && pw <= 500.0f) {
-      save_prev_weight(pw);  // EEPROM.put + commit
-      *_wd.prevWeight = pw;
-      restored++;
+    if (doc.containsKey("weight")) {
+      float v = doc["weight"].as<float>();
+      if (v >= 0.0f && v <= 500.0f) { w = v; restored++; }
     }
-  }
-  if (doc.containsKey("prevOffset")) {
-    long po = doc["prevOffset"].as<long>();
-    save_prev_offset(po);  // EEPROM.put + commit
-    restored++;
+    if (doc.containsKey("prevWeight")) {
+      float v = doc["prevWeight"].as<float>();
+      if (v >= 0.0f && v <= 500.0f) { pw = v; restored++; }
+    }
+    if (doc.containsKey("prevOffset")) {
+      po = doc["prevOffset"].as<long>();
+      if (po > -16777216L && po < 16777216L) restored++; else po = INT32_MIN;
+    }
+    save_calibration_block(cf, ofs, w, pw, po);
+    // Применяем значения к runtime
+    if (!isnan(cf) && _wa.doSetCalibFactor) _wa.doSetCalibFactor(cf);
+    if (ofs != INT32_MIN && _wa.doSetCalibOffset) _wa.doSetCalibOffset(ofs);
+    if (!isnan(w)) *_wd.lastSavedWeight = w;
+    if (!isnan(pw)) *_wd.prevWeight = pw;
+#if defined(ESP8266)
+    ESP.wdtFeed();
+#endif
   }
 
   // Настройки
   float ad = web_get_alert_delta(), cw = web_get_calib_weight(), ea = web_get_ema_alpha();
   if (doc.containsKey("alertDelta"))  { float v = doc["alertDelta"].as<float>();  if (v >= 0.1f && v <= 10.0f) { ad = v; restored++; } }
-  if (doc.containsKey("calibWeight")) { float v = doc["calibWeight"].as<float>(); if (v >= 100.0f && v <= 5000.0f) { cw = v; restored++; } }
+  if (doc.containsKey("calibWeight")) { float v = doc["calibWeight"].as<float>(); if (v >= 100.0f && v <= 50000.0f) { cw = v; restored++; } }
   if (doc.containsKey("emaAlpha"))    { float v = doc["emaAlpha"].as<float>();    if (v >= 0.05f && v <= 0.9f) { ea = v; restored++; } }
   save_web_settings(ad, cw, ea);
+#if defined(ESP8266)
+  ESP.wdtFeed();
+#endif
 
   // Ext settings — batch: один commit вместо 3
   {
@@ -2009,32 +2246,48 @@ static void _handleBackupRestore() {
 }
 
 // ─── PUBLIC API ───────────────────────────────────────────────────────────
+static bool _routesBound = false;
+
 void webserver_init(WebData &data, WebActions &actions) {
   _wd = data;
   _wa = actions;
 
-  _srv.on("/",             HTTP_GET,  _handleRoot);
-  _srv.on("/api/data",     HTTP_GET,  _handleData);
-  _srv.on("/api/tare",     HTTP_POST, _handleTare);
-  _srv.on("/api/save",     HTTP_POST, _handleSave);
-  _srv.on("/api/settings",   HTTP_POST, _handleSettings);
-  _srv.on("/api/ntp",        HTTP_POST, _handleNtp);
-  _srv.on("/api/reboot",     HTTP_POST, _handleReboot);
-  _srv.on("/api/log",          HTTP_GET,  _handleLog);
-  _srv.on("/api/daystat",      HTTP_GET,  _handleDayStat);
-  _srv.on("/api/log/clear",    HTTP_POST, _handleLogClear);
-  _srv.on("/api/log/json",     HTTP_GET,  _handleLogJson);
-  _srv.on("/chart",            HTTP_GET,  _handleChart);
-  _srv.on("/api/tg/settings",  HTTP_POST, _handleTgSettings);
-  _srv.on("/api/tg/test",      HTTP_POST, _handleTgTest);
-  _srv.on("/api/calib/set",    HTTP_POST, _handleCalibSet);
-  _srv.on("/wifi",              HTTP_GET,  _handleWifi);
-  _srv.on("/api/wifi/settings", HTTP_POST, _handleWifiSettings);
-  _srv.on("/api/config",        HTTP_GET,  _handleConfig);
-  _srv.on("/api/backup",          HTTP_GET,  _handleBackup);
-  _srv.on("/api/backup/restore",  HTTP_POST, _handleBackupRestore);
-  _srv.onNotFound(_handleNotFound);
+  // Идемпотентность: при повторном вызове после WiFi reconnect не регистрируем
+  // handlers второй раз — ESP8266WebServer внутри хранит их в vector и дубли
+  // приводят к двойным срабатываниям и утечкам памяти.
+  _srv.stop();  // фикс пункта 7: перед begin() корректно закрыть предыдущий сокет
+  if (!_routesBound) {
+    _srv.on("/",             HTTP_GET,  _handleRoot);
+    _srv.on("/api/data",     HTTP_GET,  _handleData);
+    _srv.on("/api/tare",     HTTP_POST, _handleTare);
+    _srv.on("/api/save",     HTTP_POST, _handleSave);
+    _srv.on("/api/settings",   HTTP_POST, _handleSettings);
+    _srv.on("/api/ntp",        HTTP_POST, _handleNtp);
+    _srv.on("/api/reboot",     HTTP_POST, _handleReboot);
+    _srv.on("/api/log",          HTTP_GET,  _handleLog);
+    _srv.on("/api/daystat",      HTTP_GET,  _handleDayStat);
+    _srv.on("/api/log/clear",    HTTP_POST, _handleLogClear);
+    _srv.on("/api/log/json",     HTTP_GET,  _handleLogJson);
+    _srv.on("/chart",            HTTP_GET,  _handleChart);
+    _srv.on("/api/tg/settings",  HTTP_POST, _handleTgSettings);
+    _srv.on("/api/tg/test",      HTTP_POST, _handleTgTest);
+    _srv.on("/api/calib/set",    HTTP_POST, _handleCalibSet);
+    _srv.on("/wifi",              HTTP_GET,  _handleWifi);
+    _srv.on("/api/wifi/settings", HTTP_POST, _handleWifiSettings);
+    _srv.on("/api/config",        HTTP_GET,  _handleConfig);
+    _srv.on("/api/backup",          HTTP_GET,  _handleBackup);
+    _srv.on("/api/backup/restore",  HTTP_POST, _handleBackupRestore);
+    _srv.on("/api/auth/password",   HTTP_POST, _handleAuthPassword);
+    _srv.on("/api/auth/ota",        HTTP_POST, _handleAuthOta);
+    _srv.onNotFound(_handleNotFound);
 
+    // Нужно явно запросить сохранение заголовка X-CSRF-Token — иначе server.header()
+    // вернёт пустую строку (ESP8266WebServer по умолчанию не буферизирует headers).
+    _srv.collectHeaders("X-CSRF-Token");
+    _routesBound = true;
+  }
+
+  _csrf_init();
   _srv.begin();
   Serial.print(F("[WebServer] Started on port "));
   Serial.print(WEB_SERVER_PORT);

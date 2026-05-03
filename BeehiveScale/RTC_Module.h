@@ -19,5 +19,8 @@ bool        rtc_lost_power();
 float       rtc_temperature();
 String      rtc_format_datetime(const TimeStamp &t);
 String      rtc_format_time(const TimeStamp &t);
+// Buf-версии без heap-аллокаций (для горячих путей в loop()):
+void        rtc_format_datetime_buf(const TimeStamp &t, char *buf, size_t len);
+void        rtc_format_time_buf(const TimeStamp &t, char *buf, size_t len);
 
 #endif

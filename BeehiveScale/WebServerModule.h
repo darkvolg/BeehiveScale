@@ -4,15 +4,15 @@
 #include <Arduino.h>
 
 #define WEB_SERVER_PORT   80
-#define WEB_ADMIN_USER    "admin"
-#define WEB_ADMIN_PASS    "beehive"
+// WEB_ADMIN_USER / WEB_ADMIN_PASS перенесены в EEPROM: см. get_admin_user()/get_admin_pass()
+// Дефолты при пустом EEPROM: admin / beehive (credentials_is_default() → true, UI показывает баннер)
 #define WEB_REFRESH_SEC   5
 
 struct WebData {
   float*  weight;
   float*  lastSavedWeight;
   float*  tempC;
-  float*  humidity;
+  // humidity убран в v4.2: нет подключённого датчика влажности — не выводить dummy.
   float*  rtcTempC;
   float*  calibFactor;
   long*   offset;

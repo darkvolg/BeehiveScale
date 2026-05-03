@@ -41,7 +41,7 @@
 | LCD I2C | SCL | GPIO5 | D1 |
 | DS3231 RTC | SDA | GPIO4 | D2 |
 | DS3231 RTC | SCL | GPIO5 | D1 |
-| DS18B20 | Data | GPIO13 | D7 |
+| DS18B20 | Data | GPIO3 | RX (D9) |
 | Кнопка MAIN | — | GPIO0 | D3 |
 | Кнопка MENU | — | GPIO2 | D4 |
 | Батарея | ADC | A0 | A0 |
@@ -50,7 +50,7 @@
 | SD-карта | MISO | GPIO12 | D6 |
 | SD-карта | MOSI | GPIO13 | D7 |
 
-> GPIO13 (D7) общий для DS18B20 и SD MOSI — работает корректно, конфликтов нет.
+> DS18B20 перенесён на GPIO3 (RX) — GPIO13 занят под SPI MOSI для SD-карты. Serial RX использовать нельзя пока подключён DS18B20.
 
 ## Установка
 

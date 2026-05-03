@@ -10,8 +10,12 @@ bool rtc_init() {
     return false;
   }
   if (_rtc.lostPower()) {
-    Serial.println(F("[RTC] Power lost, setting compile time."));
-    _rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    // НИКОГДА не писать компильную дату — она может быть в будущем/прошлом
+    // относительно реального времени, а Logger и TG-report полагаются
+    // на корректный timestamp. Лучше оставить RTC в lostPower()-состоянии:
+    // rtc_now() вернёт valid=false, loop() использует uptime как fallback
+    // и после успешного NTP sync (STA режим) RTC будет скорректирован.
+    Serial.println(F("[RTC] Power lost — waiting for NTP sync"));
   }
   Serial.println(F("[RTC] OK"));
   return true;
@@ -59,17 +63,35 @@ float rtc_temperature() {
   return _rtc.getTemperature();
 }
 
-String rtc_format_datetime(const TimeStamp &t) {
-  if (!t.valid) return F("??/?? ??:??:??");
-  char buf[20];
-  snprintf(buf, sizeof(buf), "%02u.%02u.%04u %02u:%02u:%02u",
+void rtc_format_datetime_buf(const TimeStamp &t, char *buf, size_t len) {
+  if (!buf || len < 20) { if (buf && len) buf[0] = '\0'; return; }
+  if (!t.valid) {
+    strncpy(buf, "??.??.???? ??:??:??", len);
+    buf[len - 1] = '\0';
+    return;
+  }
+  snprintf(buf, len, "%02u.%02u.%04u %02u:%02u:%02u",
            t.day, t.month, t.year, t.hour, t.minute, t.second);
+}
+
+void rtc_format_time_buf(const TimeStamp &t, char *buf, size_t len) {
+  if (!buf || len < 9) { if (buf && len) buf[0] = '\0'; return; }
+  if (!t.valid) {
+    strncpy(buf, "??:??:??", len);
+    buf[len - 1] = '\0';
+    return;
+  }
+  snprintf(buf, len, "%02u:%02u:%02u", t.hour, t.minute, t.second);
+}
+
+String rtc_format_datetime(const TimeStamp &t) {
+  char buf[20];
+  rtc_format_datetime_buf(t, buf, sizeof(buf));
   return String(buf);
 }
 
 String rtc_format_time(const TimeStamp &t) {
-  if (!t.valid) return F("??:??:??");
   char buf[9];
-  snprintf(buf, sizeof(buf), "%02u:%02u:%02u", t.hour, t.minute, t.second);
+  rtc_format_time_buf(t, buf, sizeof(buf));
   return String(buf);
 }

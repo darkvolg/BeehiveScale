@@ -1,8 +1,9 @@
 /*
- * BeehiveScale v4.1 - Весы пчеловода (ESP8266)
- * NTP синхронизация времени через интернет
+ * BeehiveScale - Весы пчеловода (ESP8266)
+ * Версия определена в Version.h (FW_VERSION).
  */
 
+#include "Version.h"
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <HX711.h>
@@ -30,10 +31,14 @@
 #include "Battery.h"
 #include "Logger.h"
 
-#define DT_PIN          16
-#define SCK_PIN          1
-#define BUTTON_PIN       0
-#define MENU_BTN_PIN     2
+// HX711 на стандартных пинах ESP8266 (как у Bee_Lite v1.1, проверенный эталон).
+// GPIO14/12 — обычные GPIO с поддержкой INPUT_PULLUP, без boot-strap функций.
+// Прежняя распиновка (DT=GPIO16, SCK=GPIO1=TX) давала плавающий вес из-за
+// отсутствия pull-up на GPIO16 и UART-мусора на SCK при старте.
+#define DT_PIN          14   // D5 — HX711 DOUT
+#define SCK_PIN         12   // D6 — HX711 SCK
+#define BUTTON_PIN       0   // D3 — boot-strap! Не держать при включении
+#define MENU_BTN_PIN     2   // D4 — boot-strap! Не держать при включении
 #define LCD_ADDR      0x27
 
 #define WEIGHT_SAVE_MS    300000UL
@@ -79,8 +84,7 @@ static inline void app_wdt_reset() {
 LiquidCrystal_I2C lcd(LCD_ADDR, 16, 2);
 HX711             scale;
 
-// Примечание: Serial.end() вызывается перед scale_init() (GPIO1=TX=SCK для HX711).
-// После Serial.end() вызовы Serial.print() безопасны — UART отключен, данные никуда не идут.
+// Serial доступен всю работу: HX711 теперь на D5/D6, UART TX (GPIO1) свободен.
 
 struct SystemState {
   float calibrationFactor = 2280.0f;
@@ -137,7 +141,7 @@ void check_auto_sleep();
 
 void setup() {
   Serial.begin(115200);
-  Serial.println(F("\n[BeehiveScale] v4.1 boot"));
+  Serial.println(F("\n[" FW_FULLNAME "] boot"));
 
 #if defined(ESP8266)
   ESP.wdtDisable();  // Отключаем программный WDT на время setup (ESP8266 ~3сек по умолчанию)
@@ -172,7 +176,6 @@ void setup() {
 
   lcd_init(lcd);
 
-  Serial.end();              // Освободить GPIO1 (TX) перед HX711 — SCK на GPIO1
   scale_init(scale, DT_PIN, SCK_PIN);
   sys.sensorReady = check_sensor(scale);
 
@@ -189,6 +192,7 @@ void setup() {
   sched_settings_init();
   tg_report_settings_init();
   tg_settings_init();
+  credentials_init();
   // prevWeight при загрузке из EEPROM addr 30 (эталон пользователя).
   // Fallback на lastSavedWeight если EEPROM addr 30 ещё не записан.
   sys.prevWeight = load_prev_weight(sys.lastSavedWeight);
@@ -204,12 +208,6 @@ void setup() {
   sys.wifiOk = wifi_init();  // Инициализация WiFi (AP или STA режим)
   yield();
 
-  // После WiFi восстанавливаем параметры HX711 (на ESP8266 WiFi.mode() может сбросить GPIO)
-  if (sys.sensorReady) {
-    scale.set_scale(sys.calibrationFactor);
-    scale.set_offset(sys.offset);
-  }
-
   yield();
   show_splash_screen();
   yield();
@@ -221,9 +219,14 @@ void setup() {
       ntp_sync_time();  // Синхронизация времени (только в STA режиме)
     }
     start_webserver();
-    // ArduinoOTA — обновление прошивки по воздуху
+    // ArduinoOTA — обновление прошивки по воздуху. Пароль хранится в EEPROM,
+    // дефолт "ota_beehive" при пустом блоке credentials (UI показывает warning).
     ArduinoOTA.setHostname("beehivescale");
-    ArduinoOTA.setPassword("ota_beehive");
+    {
+      char otaPassBuf[32];
+      get_ota_pass(otaPassBuf, sizeof(otaPassBuf));
+      ArduinoOTA.setPassword(otaPassBuf);
+    }
     ArduinoOTA.onStart([]() { lastActivityTime = millis(); });
     ArduinoOTA.onProgress([](unsigned int, unsigned int) { lastActivityTime = millis(); });
     ArduinoOTA.begin();
@@ -246,7 +249,7 @@ void start_webserver() {
   wd.weight          = &sys.smoothedWeight;
   wd.lastSavedWeight = &sys.lastSavedWeight;
   wd.tempC           = &sys.tempData.temperature;
-  wd.humidity        = &sys.tempData.humidity;
+  // humidity поле убрано (пункт 22) — нет физического датчика.
   wd.rtcTempC        = &sys.rtcTempC;
   wd.calibFactor     = &sys.calibrationFactor;
   wd.offset          = &sys.offset;
@@ -402,6 +405,10 @@ void loop() {
   } else {
     sys.wifiOk = (WiFi.status() == WL_CONNECTED);
     if (!sys.wifiOk && webServerStarted) {
+      // Корректно останавливаем web-сервер перед сбросом флага — иначе при
+      // реконнекте повторный _srv.begin() поверх живого слушающего сокета
+      // может вести к утечкам / двойным handlers (пункт 7).
+      webserver_stop();
       webServerStarted = false;
     }
     ntp_loop();
@@ -465,6 +472,10 @@ void loop() {
   uint32_t sleepDur = sys.currentTime.valid
     ? sched_next_sec(sys.currentTime.hour, sys.currentTime.minute)
     : get_sleep_sec();
+  // Guard (пункт 8): sched_next_sec() может вернуть 0 в пограничном случае
+  // ровно на минуте расписания — без этой защиты ESP проснётся мгновенно
+  // и будет непрерывно войти-выйти из deep sleep, разряжая батарею.
+  if (sleepDur < 30) sleepDur = get_sleep_sec();
   sleep_enter(sleepDur);
 #endif
 }
@@ -559,12 +570,21 @@ void process_weight() {
   static int   stableBufCnt = 0;
   static bool  stableSaved  = false;
 
-  if (millis() - lastReadTime < 800UL) return;
+  // 2500мс между чтениями — HX711@10Hz даёт независимые сэмплы каждые 100мс,
+  // get_units(5) занимает ~500мс. Пауза 2с между выборками снижает температурный
+  // дрейф датчика и даёт WebServer/OTA окно на обработку запросов.
+  if (millis() - lastReadTime < 2500UL) return;
   lastReadTime = millis();
+
+  // spikeRejectCnt перенесён наверх функции чтобы его можно было сбросить
+  // при раннем return по NaN (пункт 17). Ранее был static в середине ниже
+  // по коду — это приводило к накоплению счётчика при серии NaN и возможному
+  // случайному срабатыванию 5-rejection reset при первом валидном чтении.
+  static int spikeRejectCnt = 0;
 
   float raw = scale_read_weight(scale, SCALE_READ_SAMPLES);
   if (isnan(raw)) {
-    // spike-фильтр применяется ниже, но NaN пропускаем сразу
+    spikeRejectCnt = 0;
     if (sys.sensorReady) {
       sys.sensorReady = false;
       sys.needsRedraw = true;
@@ -585,7 +605,7 @@ void process_weight() {
 
   // --- Spike-фильтр: отбросить показание если скачок > SPIKE_FILTER_KG ---
   // После 5 подряд отклонений — сброс EMA (вес мог резко измениться или была помеха)
-  static int spikeRejectCnt = 0;
+  // (spikeRejectCnt объявлен в начале функции — пункт 17)
   if (sys.emaInitialized && fabsf(raw - sys.smoothedWeight) > SPIKE_FILTER_KG) {
     spikeRejectCnt++;
     Serial.print(F("[Spike] Rejected raw="));
@@ -1273,11 +1293,10 @@ void perform_calibration() {
       return;
     }
   }
-  if (raw < 0.0f) {
-    // Датчик перевёрнут — инвертируем
-    Serial.println(F("[Calib] WARNING: raw<0, inverting"));
-    raw = -raw;
-  }
+  // Знак raw сохраняем: при «обратном» подключении тензодатчика raw<0,
+  // тогда calibrationFactor получится отрицательный, и HX711 lib вернёт
+  // положительный вес во время работы. Инверсию из b74c04d убрали —
+  // она ломала показания при реальном reverse-подключении.
 
   sys.calibrationFactor = raw / (web_get_calib_weight() / 1000.0f);
   scale.set_scale(sys.calibrationFactor);

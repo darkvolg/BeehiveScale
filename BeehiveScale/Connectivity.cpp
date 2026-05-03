@@ -20,15 +20,16 @@
 
 static WifiStatus _wifiStatus = WIFI_DISCONNECTED;
 
-// Инициализация WiFi в режиме STA или AP
+// Инициализация WiFi в режиме STA или AP.
+// Если выбран STA, но подключение не удалось за WIFI_TIMEOUT_MS — авто-fallback в AP,
+// чтобы пользователь всегда мог достучаться до Web UI и перенастроить.
 bool wifi_init() {
   wifi_settings_init();
-  // Режим из EEPROM: 0=AP (по умолчанию), 1=STA
   uint8_t mode = get_wifi_mode();
 
   if (mode == 1) {
-    // STA режим — подключение к роутеру
-    return wifi_connect();
+    if (wifi_connect()) return true;
+    Serial.println(F("[WiFi] STA failed — fallback to AP mode"));
   }
 
   // AP режим — точка доступа без роутера
@@ -228,61 +229,64 @@ void queue_process() {
   // Читаем и отправляем по одному элементу — без выделения heap под весь массив
   size_t sent = 0;
   size_t maxSend = (count > 5) ? 5 : count;
+  bool sendFailed = false;
+  UnsentData failedItem = {};
+  bool hasFailedItem = false;
+
   for (size_t i = 0; i < maxSend; i++) {
     UnsentData item;
     if (f.read((uint8_t*)&item, sizeof(UnsentData)) != sizeof(UnsentData)) break;
     Serial.print(F("[Queue] Sending item ")); Serial.println(i+1);
     if (!ts_send(item.weight, item.temp, item.hum, item.rtcTemp)) {
       Serial.println(F("[Queue] Send failed, saving remaining"));
-      // Сохраняем оставшиеся записи (текущую + последующие)
-      File tmp = LittleFS.open("/queue_tmp.bin", "w");
-      if (tmp) {
-        tmp.write((uint8_t*)&item, sizeof(UnsentData));
-        while (f.available()) {
-          UnsentData rem;
-          if (f.read((uint8_t*)&rem, sizeof(UnsentData)) == sizeof(UnsentData))
-            tmp.write((uint8_t*)&rem, sizeof(UnsentData));
-        }
-        tmp.close();
-      }
-      f.close();
-      LittleFS.remove(QUEUE_FILE);
-      if (LittleFS.exists("/queue_tmp.bin")) {
-        if (!LittleFS.rename("/queue_tmp.bin", QUEUE_FILE)) {
-          Serial.println(F("[Queue] Rename failed, keeping tmp"));
-        }
-      }
-      Serial.print(F("[Queue] Sent ")); Serial.print(sent); Serial.println(F(" items"));
-      return;
+      failedItem = item;
+      hasFailedItem = true;
+      sendFailed = true;
+      break;
     }
     sent++;
     delay(500);
 #if defined(ESP8266)
     ESP.wdtFeed();
 #endif
-    // tg_send_report НЕ вызывается из очереди: очередь только для ThingSpeak.
-    // TG-отчёты управляются отдельным таймером TG_REPORT_INTERVAL.
     yield();
   }
-  // Save remaining items if we only processed a subset
-  if (maxSend < count && f.available()) {
+
+  // Снимок позиции в f ДО закрытия: всё что осталось после сейчас-прочитанного —
+  // надо перенести в tmp. Исправление пункта 18: раньше код читал f.available()
+  // ПОСЛЕ f.close(), что давало false. Теперь сначала копируем, потом закрываем.
+  bool hasRemaining = f.available();
+  if (sendFailed || (maxSend < count && hasRemaining)) {
     File tmp = LittleFS.open("/queue_tmp.bin", "w");
     if (tmp) {
+      if (hasFailedItem) {
+        tmp.write((uint8_t*)&failedItem, sizeof(UnsentData));
+      }
       while (f.available()) {
         UnsentData rem;
-        if (f.read((uint8_t*)&rem, sizeof(UnsentData)) == sizeof(UnsentData))
+        if (f.read((uint8_t*)&rem, sizeof(UnsentData)) == sizeof(UnsentData)) {
           tmp.write((uint8_t*)&rem, sizeof(UnsentData));
+        } else {
+          break;
+        }
+        yield();
       }
       tmp.close();
+    } else {
+      Serial.println(F("[Queue] Cannot open tmp file"));
     }
     f.close();
     LittleFS.remove(QUEUE_FILE);
-    if (LittleFS.exists("/queue_tmp.bin"))
-      LittleFS.rename("/queue_tmp.bin", QUEUE_FILE);
-    Serial.print(F("[Queue] Partial: sent ")); Serial.print(sent);
+    if (LittleFS.exists("/queue_tmp.bin")) {
+      if (!LittleFS.rename("/queue_tmp.bin", QUEUE_FILE)) {
+        Serial.println(F("[Queue] Rename failed, keeping tmp"));
+      }
+    }
+    Serial.print(F("[Queue] Sent ")); Serial.print(sent);
     Serial.print(F(" of ")); Serial.println(count);
     return;
   }
+
   f.close();
   LittleFS.remove(QUEUE_FILE);
   Serial.println(F("[Queue] Done"));
@@ -324,11 +328,16 @@ static bool _tg_post(const char* message) {
   char url[160];
   snprintf(url, sizeof(url), "https://%s/bot%s/sendMessage", TG_HOST, useToken);
 
+  // yield() перед/после BearSSL — handshake на ESP8266 занимает 2-5 сек,
+  // даёт шанс WDT feed и TCP стеку обработать backlog.
+  yield();
 #if defined(ESP8266)
+  ESP.wdtFeed();
   if (!http.begin(client, url)) return false;
 #else
   http.begin(client, url);
 #endif
+  yield();
   http.addHeader("Content-Type", "application/json");
 
   StaticJsonDocument<256> doc;
@@ -338,7 +347,11 @@ static bool _tg_post(const char* message) {
   char body[384];
   serializeJson(doc, body, sizeof(body));
 
+#if defined(ESP8266)
+  ESP.wdtFeed();
+#endif
   int code = http.POST(body);
+  yield();
   http.end();
 
   if (code == 200) {
@@ -371,6 +384,7 @@ bool tg_send_alert(float weight, float tempC, const String &datetime) {
 }
 
 bool tg_send_report(float weight, float tempC, float humidity, const String &datetime) {
+  (void)humidity;  // пункт 22: нет датчика влажности — не выводим в отчёт
   char msg[320];
   int pos = 0;
   pos += snprintf(msg + pos, sizeof(msg) - pos,
@@ -378,9 +392,6 @@ bool tg_send_report(float weight, float tempC, float humidity, const String &dat
     datetime.c_str(), weight);
   if (tempC > -90) {
     pos += snprintf(msg + pos, sizeof(msg) - pos, "Temp: %.1f C\n", tempC);
-  }
-  if (humidity > -90) {
-    pos += snprintf(msg + pos, sizeof(msg) - pos, "Vlazhn: %.1f %%\n", humidity);
   }
   return _tg_post(msg);
 }
@@ -397,16 +408,20 @@ bool ts_send(float weight, float tempC, float humidity, float rtcTempC) {
     "https://api.thingspeak.com/update?api_key=%s&field1=%.2f&field2=%.1f&field3=%.1f&field4=%.2f",
     TS_API_KEY, weight, tempC, humidity, rtcTempC);
 
+  yield();
 #if defined(ESP8266)
   BearSSL::WiFiClientSecure client;
   client.setInsecure();
+  ESP.wdtFeed();
   if (!http.begin(client, url)) return false;
 #else
   WiFiClientSecure client;
   client.setInsecure();
   http.begin(client, url);
 #endif
+  yield();
   int code = http.GET();
+  yield();
   http.end();
 
   if (code == 200) {

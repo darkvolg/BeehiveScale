@@ -3,9 +3,19 @@
 
 #include <Arduino.h>
 
+// Реальные секреты — в secrets.h (файл в .gitignore).
+// Если файла нет, ниже подставляются плейсхолдеры.
+#if __has_include("secrets.h")
+  #include "secrets.h"
+#endif
+
 // ─── Настройки Wi-Fi ──────────────────────────────────────────────────────
+#ifndef WIFI_SSID
 #define WIFI_SSID        "YOUR_WIFI_SSID"
+#endif
+#ifndef WIFI_PASSWORD
 #define WIFI_PASSWORD    "YOUR_WIFI_PASSWORD"
+#endif
 #define WIFI_TIMEOUT_MS  10000UL
 
 // ─── Режим WiFi ───────────────────────────────────────────────────────────
@@ -24,14 +34,20 @@
 #define NTP_SYNC_INTERVAL    3600000UL
 
 // ─── Настройки Telegram ───────────────────────────────────────────────────
+#ifndef TG_BOT_TOKEN
 #define TG_BOT_TOKEN     "YOUR_BOT_TOKEN"
+#endif
+#ifndef TG_CHAT_ID
 #define TG_CHAT_ID       "YOUR_CHAT_ID"
+#endif
 #define TG_ALERT_DELTA_KG   1.0f
 #define TG_REPORT_INTERVAL  21600000UL
 
 // ─── Настройки ThingSpeak ─────────────────────────────────────────────────
 #define USE_THINGSPEAK   1
+#ifndef TS_API_KEY
 #define TS_API_KEY       "YOUR_THINGSPEAK_WRITE_KEY"
+#endif
 #define TS_CHANNEL_ID    0
 #define TS_UPDATE_INTERVAL_MS  60000UL
 

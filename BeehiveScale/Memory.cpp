@@ -35,7 +35,7 @@ void web_settings_init() {
     EEPROM.get(EEPROM_ADDR_EMA_ALPHA, _emaAlpha);
 
     if (isnan(_alertDelta) || _alertDelta < 0.1f || _alertDelta > 10.0f) _alertDelta = 0.5f;
-    if (isnan(_calibWeight) || _calibWeight < 100.0f || _calibWeight > 5000.0f) _calibWeight = 1000.0f;
+    if (isnan(_calibWeight) || _calibWeight < 100.0f || _calibWeight > 50000.0f) _calibWeight = 1000.0f;
     if (isnan(_emaAlpha) || _emaAlpha < 0.05f || _emaAlpha > 0.9f) _emaAlpha = 0.2f;
   }
   _settingsLoaded = true;
@@ -93,6 +93,28 @@ void save_offset(long offset) {
 void save_weight(float &lastWeight, float currentWeight) {
   lastWeight = currentWeight;
   EEPROM.put(EEPROM_ADDR_WEIGHT, lastWeight);
+  EEPROM.commit();
+}
+
+void save_calibration_block(float factor, long offset, float weight,
+                            float prevWeight, long prevOffset) {
+  if (!isnan(factor) && factor >= 100.0f && factor <= 100000.0f) {
+    EEPROM.put(EEPROM_ADDR_CALIB, factor);
+  }
+  if (offset > -16777216L && offset < 16777216L) {
+    EEPROM.put(EEPROM_ADDR_OFFSET, offset);
+  }
+  if (!isnan(weight) && weight >= 0.0f && weight <= 500.0f) {
+    EEPROM.put(EEPROM_ADDR_WEIGHT, weight);
+  }
+  if (!isnan(prevWeight) && prevWeight >= 0.0f && prevWeight <= 500.0f) {
+    EEPROM.put(EEPROM_ADDR_PREV_WEIGHT, prevWeight);
+  }
+  if (prevOffset > -16777216L && prevOffset < 16777216L) {
+    EEPROM.put(EEPROM_ADDR_PREV_OFFSET, prevOffset);
+  }
+  byte magic = EEPROM_MAGIC_VALUE;
+  EEPROM.put(EEPROM_ADDR_MAGIC, magic);
   EEPROM.commit();
 }
 
@@ -297,7 +319,10 @@ void wifi_settings_init() {
   byte magic = 0;
   EEPROM.get(EEPROM_ADDR_WIFI_MAGIC, magic);
   if (magic != EEPROM_MAGIC_WIFI_VALUE) {
-    _wifiMode = 0;
+    // Первый запуск: пробуем STA. Реальные creds подставятся из WIFI_SSID/
+    // WIFI_PASSWORD (секреты в secrets.h, см. Connectivity.h). Если STA не
+    // подключится — wifi_init() откатит в AP автоматически.
+    _wifiMode = 1;
     _wifiSsid[0] = '\0';
     _wifiStaPass[0] = '\0';
   } else {
@@ -465,4 +490,91 @@ void set_tg_report_interval_min(uint32_t minutes) {
   EEPROM.put(EEPROM_ADDR_TG_REPORT_INT, _tgReportIntervalMin);
   EEPROM.commit();
   _tgRptLoaded = true;
+}
+
+// ─── Credentials (admin web UI + OTA) ────────────────────────────────────
+static char _adminUser[24] = "admin";
+static char _adminPass[32] = "beehive";
+static char _otaPass[32]   = "ota_beehive";
+static bool _credDefault   = true;   // true = используются дефолты (EEPROM пуст)
+static bool _credLoaded    = false;
+
+void credentials_init() {
+  if (_credLoaded) return;
+  byte magic = 0;
+  EEPROM.get(EEPROM_ADDR_CRED_MAGIC, magic);
+  if (magic != EEPROM_MAGIC_CRED_VALUE) {
+    _credDefault = true;
+    strncpy(_adminUser, "admin", sizeof(_adminUser));
+    strncpy(_adminPass, "beehive", sizeof(_adminPass));
+    strncpy(_otaPass,   "ota_beehive", sizeof(_otaPass));
+  } else {
+    EEPROM.get(EEPROM_ADDR_ADMIN_USER, _adminUser);
+    EEPROM.get(EEPROM_ADDR_ADMIN_PASS, _adminPass);
+    EEPROM.get(EEPROM_ADDR_OTA_PASS,   _otaPass);
+    _adminUser[sizeof(_adminUser) - 1] = '\0';
+    _adminPass[sizeof(_adminPass) - 1] = '\0';
+    _otaPass[sizeof(_otaPass) - 1]     = '\0';
+    if (_adminUser[0] == '\0') strncpy(_adminUser, "admin", sizeof(_adminUser));
+    if (_adminPass[0] == '\0') strncpy(_adminPass, "beehive", sizeof(_adminPass));
+    if (_otaPass[0]   == '\0') strncpy(_otaPass, "ota_beehive", sizeof(_otaPass));
+    _credDefault = false;
+  }
+  _credLoaded = true;
+}
+
+bool credentials_is_default() {
+  if (!_credLoaded) credentials_init();
+  return _credDefault;
+}
+
+void get_admin_user(char *buf, size_t maxLen) {
+  if (!_credLoaded) credentials_init();
+  strncpy(buf, _adminUser, maxLen - 1);
+  buf[maxLen - 1] = '\0';
+}
+
+void get_admin_pass(char *buf, size_t maxLen) {
+  if (!_credLoaded) credentials_init();
+  strncpy(buf, _adminPass, maxLen - 1);
+  buf[maxLen - 1] = '\0';
+}
+
+void set_admin_credentials(const char *user, const char *pass) {
+  if (!_credLoaded) credentials_init();
+  if (user && strlen(user) >= 3 && strlen(user) <= 23) {
+    strncpy(_adminUser, user, sizeof(_adminUser) - 1);
+    _adminUser[sizeof(_adminUser) - 1] = '\0';
+  }
+  if (pass && strlen(pass) >= 6 && strlen(pass) <= 31) {
+    strncpy(_adminPass, pass, sizeof(_adminPass) - 1);
+    _adminPass[sizeof(_adminPass) - 1] = '\0';
+  }
+  byte magic = EEPROM_MAGIC_CRED_VALUE;
+  EEPROM.put(EEPROM_ADDR_CRED_MAGIC, magic);
+  EEPROM.put(EEPROM_ADDR_ADMIN_USER, _adminUser);
+  EEPROM.put(EEPROM_ADDR_ADMIN_PASS, _adminPass);
+  EEPROM.put(EEPROM_ADDR_OTA_PASS,   _otaPass);
+  EEPROM.commit();
+  _credDefault = false;
+}
+
+void get_ota_pass(char *buf, size_t maxLen) {
+  if (!_credLoaded) credentials_init();
+  strncpy(buf, _otaPass, maxLen - 1);
+  buf[maxLen - 1] = '\0';
+}
+
+void set_ota_pass(const char *pass) {
+  if (!_credLoaded) credentials_init();
+  if (!pass || strlen(pass) < 6 || strlen(pass) > 31) return;
+  strncpy(_otaPass, pass, sizeof(_otaPass) - 1);
+  _otaPass[sizeof(_otaPass) - 1] = '\0';
+  byte magic = EEPROM_MAGIC_CRED_VALUE;
+  EEPROM.put(EEPROM_ADDR_CRED_MAGIC, magic);
+  EEPROM.put(EEPROM_ADDR_ADMIN_USER, _adminUser);
+  EEPROM.put(EEPROM_ADDR_ADMIN_PASS, _adminPass);
+  EEPROM.put(EEPROM_ADDR_OTA_PASS,   _otaPass);
+  EEPROM.commit();
+  _credDefault = false;
 }

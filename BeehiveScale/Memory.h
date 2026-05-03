@@ -41,7 +41,15 @@
 #define EEPROM_ADDR_TG_REPORT_INT 219  // uint32_t — интервал TG-отчётов (минуты, 0=выкл)
 #define EEPROM_MAGIC_TG_RPT_VALUE 0xE1
 #define EEPROM_ADDR_TG_REPORT_MAGIC 223 // 1 байт magic
-#define EEPROM_SIZE              256  // запас для будущих настроек
+// ─── Credentials block (addr 224-383) ─────────────────────────────────────
+// Добавлено в v4.2: admin web UI pass, OTA pass. Старый layout 0..223 не затронут.
+#define EEPROM_ADDR_CRED_MAGIC   224  // 1 байт magic
+#define EEPROM_MAGIC_CRED_VALUE  0xF2
+#define EEPROM_ADDR_ADMIN_USER   225  // char[24]
+#define EEPROM_ADDR_ADMIN_PASS   249  // char[32]
+#define EEPROM_ADDR_OTA_PASS     281  // char[32]
+// 313..383 reserved for future credential fields
+#define EEPROM_SIZE              384  // расширено под credentials-блок
 
 // Веб-настройки (alertDelta, calibWeight, emaAlpha)
 void  web_settings_init();
@@ -66,6 +74,11 @@ void load_calibration_data(float &factor, long &offset, float &weight);
 void save_calibration(float factor);
 void save_offset(long offset);
 void save_weight(float &lastWeight, float currentWeight);
+// Batch: восстановление всего калибровочного блока (factor, offset, weight, prevWeight, prevOffset)
+// за 1 EEPROM.commit() — используется в /api/backup/restore для снижения wear.
+// Параметры со значением NAN / INT32_MIN игнорируются (сохраняется текущее значение).
+void save_calibration_block(float factor, long offset, float weight,
+                            float prevWeight, long prevOffset);
 
 // Telegram настройки (token, chat_id)
 void tg_settings_init();
@@ -97,6 +110,16 @@ uint32_t sched_next_sec(uint8_t hour, uint8_t minute);  // секунд до с�
 void     tg_report_settings_init();
 uint32_t get_tg_report_interval_min();
 void     set_tg_report_interval_min(uint32_t minutes);
+
+// Credentials (admin web UI, OTA)
+// При пустом EEPROM возвращают дефолты "admin"/"beehive"/"ota_beehive", credentials_is_default() → true.
+void credentials_init();
+bool credentials_is_default();
+void get_admin_user(char *buf, size_t maxLen);
+void get_admin_pass(char *buf, size_t maxLen);
+void set_admin_credentials(const char *user, const char *pass);
+void get_ota_pass(char *buf, size_t maxLen);
+void set_ota_pass(const char *pass);
 
 // Предыдущий offset (для отмены тары)
 void save_prev_offset(long prevOffset);

@@ -148,6 +148,13 @@ static bool _fs_ok() {
 
 // ─── Инициализация ────────────────────────────────────────────────────────
 
+// Внутренний флаг — вызывал ли пользователь явный запрос форматирования FS
+// (через будущий /api/fs/format). Автоматический format() при begin() fail
+// удаляет все данные без предупреждения — это опасное поведение.
+static bool _userRequestedFormat = false;
+
+void log_request_format() { _userRequestedFormat = true; }
+
 bool log_init() {
 #ifdef USE_SD_CARD
   _sdOk = SD.begin(SD_CS_PIN);
@@ -155,9 +162,20 @@ bool log_init() {
     Serial.println(F("[Log] SD FAILED — trying LittleFS fallback"));
     _fallback = LittleFS.begin();
     if (!_fallback) {
-      Serial.println(F("[Log] LittleFS not formatted, formatting..."));
-      LittleFS.format();
+      // Ретраим begin() ещё раз — transient ошибки (шум по CS) могут пройти.
+      delay(100);
       _fallback = LittleFS.begin();
+    }
+    if (!_fallback) {
+      if (_userRequestedFormat) {
+        Serial.println(F("[Log] User requested format, formatting LittleFS..."));
+        LittleFS.format();
+        _fallback = LittleFS.begin();
+        _userRequestedFormat = false;
+      } else {
+        Serial.println(F("[Log] LittleFS begin FAILED — skipping auto-format."));
+        Serial.println(F("[Log] Call log_request_format() explicitly to reformat."));
+      }
     }
     if (!_fallback) {
       Serial.println(F("[Log] LittleFS fallback FAILED too"));
@@ -170,6 +188,21 @@ bool log_init() {
   }
 #else
   _flashOk = LittleFS.begin();
+  if (!_flashOk) {
+    delay(100);
+    _flashOk = LittleFS.begin();
+  }
+  if (!_flashOk) {
+    if (_userRequestedFormat) {
+      Serial.println(F("[Log] User requested format, formatting..."));
+      LittleFS.format();
+      _flashOk = LittleFS.begin();
+      _userRequestedFormat = false;
+    } else {
+      Serial.println(F("[Log] LittleFS FAILED — no auto-format"));
+      return false;
+    }
+  }
   if (!_flashOk) {
     Serial.println(F("[Log] LittleFS FAILED"));
     return false;
@@ -214,8 +247,8 @@ bool log_init() {
       _sdOk = false;
       _fallback = LittleFS.begin();
       if (!_fallback) {
-        LittleFS.format();
-        _fallback = LittleFS.begin();
+        delay(100);
+        _fallback = LittleFS.begin();  // retry без автоформата
       }
       if (_fallback) {
         if (!LittleFS.exists(LOG_FILE)) {
@@ -241,6 +274,15 @@ bool log_init() {
 static bool _validate_row(const String &datetime, float weight, float tempC,
                            float humidity, float batV) {
   if (datetime.length() == 0)         return false;  // совсем пустая дата
+  if (datetime.length() > 25)         return false;  // подозрительно длинная дата
+  // Санитизация datetime: отсекаем строки с опасными символами (CSV / XSS / разделители)
+  for (unsigned int i = 0; i < datetime.length(); i++) {
+    char c = datetime[i];
+    if (c == ';' || c == '\r' || c == '\n' || c == '\t' ||
+        c == '<' || c == '>' || c == '"' || c == '\\' || (unsigned char)c < 0x20) {
+      return false;
+    }
+  }
   if (isnan(weight) || isinf(weight)) return false;
   if (weight < -5.0f || weight > 500.0f) return false;  // физически невозможный вес
   // Значения ≤ -90 — это сентинел ошибки датчика (-99 = TEMP_ERROR_VALUE).
@@ -255,6 +297,19 @@ static bool _validate_row(const String &datetime, float weight, float tempC,
     if (batV < 0.0f || batV > 6.0f) return false;  // батарея не может быть > 6В
   }
   return true;
+}
+
+// Защита от Excel / OpenOffice formula injection (CVE-2014-3524 style):
+// если datetime начинается с =, +, -, @ — добавляем ведущую апостроф-экранировку.
+static void _write_datetime_safe(File &f, const String &datetime) {
+  if (datetime.length() > 0) {
+    char first = datetime[0];
+    if (first == '=' || first == '+' || first == '-' ||
+        first == '@' || first == '\t' || first == '\r') {
+      f.print('\'');
+    }
+  }
+  f.print(datetime);
 }
 
 // ─── Форматирование и запись одной CSV-строки ─────────────────────────────
@@ -274,7 +329,7 @@ static void _write_csv_row(File &f, const String &datetime, float weight,
   for (char *p = hBuf; *p; p++) if (*p == '.') *p = ',';
   for (char *p = bBuf; *p; p++) if (*p == '.') *p = ',';
 
-  f.print(datetime); f.print(';');
+  _write_datetime_safe(f, datetime); f.print(';');
   f.print(wBuf);     f.print(';');
   f.print(tBuf);     f.print(';');
   f.print(hBuf);     f.print(';');
@@ -302,6 +357,14 @@ void log_append(const String &datetime, float weight, float tempC,
 
   // Ротация: если файл > LOG_MAX_SIZE — архивировать с датой
   if (log_size() >= LOG_MAX_SIZE) {
+    // Счётчик последовательных неудачных ротаций (пункт 21):
+    // после 3-х неудач форсируем truncate — иначе файл растёт бесконечно.
+    static uint8_t _rotateFailCount = 0;
+
+    // Проверяем свободное место на SD/LittleFS — нельзя rotate если места нет
+    uint32_t freeBytes = log_free_space();
+    bool spaceOk = (freeBytes == 0) || (freeBytes > LOG_MAX_SIZE / 2);
+
     // Формируем имя архива: /log_YYMMDD_HHMM.csv
     // datetime передаётся в формате "DD.MM.YYYY HH:MM:SS"
     char arcName[32];
@@ -318,20 +381,42 @@ void log_append(const String &datetime, float weight, float tempC,
       // Фоллбэк — перезаписать log_old.csv
       strncpy(arcName, LOG_FILE_OLD, sizeof(arcName));
     }
-    if (_fs_exists(arcName)) _fs_remove(arcName);
-    if (!_fs_rename(LOG_FILE, arcName)) {
-      Serial.println(F("[Log] Rename FAILED, skip rotation"));
-    } else {
-      File fn = _fs_open_write(LOG_FILE);
-      if (!fn) {
-        // New file creation failed — rename archive back to preserve data
-        _fs_rename(arcName, LOG_FILE);
-        Serial.println(F("[Log] New file creation FAILED, restored from archive"));
+
+    bool rotateOk = false;
+    if (spaceOk) {
+      if (_fs_exists(arcName)) _fs_remove(arcName);
+      if (_fs_rename(LOG_FILE, arcName)) {
+        File fn = _fs_open_write(LOG_FILE);
+        if (!fn) {
+          _fs_rename(arcName, LOG_FILE);
+          Serial.println(F("[Log] New file creation FAILED, restored from archive"));
+        } else {
+          fn.print(CSV_HEADER); fn.close();
+          rotateOk = true;
+          Serial.print(F("[Log] Rotated → "));
+          Serial.println(arcName);
+        }
       } else {
-        fn.print(CSV_HEADER); fn.close();
+        Serial.println(F("[Log] Rename FAILED"));
       }
-      Serial.print(F("[Log] Rotated → "));
-      Serial.println(arcName);
+    } else {
+      Serial.println(F("[Log] No space for archive, skip rotation"));
+    }
+
+    if (rotateOk) {
+      _rotateFailCount = 0;
+    } else {
+      _rotateFailCount++;
+      if (_rotateFailCount >= 3) {
+        // Форсированный truncate: пересоздаём лог с заголовком, старые данные теряются.
+        // Это защита от неограниченного роста файла — лучше потерять последние
+        // записи чем довести SD до 100% заполнения.
+        Serial.println(F("[Log] Rotate failed 3x — forced truncate"));
+        _fs_remove(LOG_FILE);
+        File fw = _fs_open_write(LOG_FILE);
+        if (fw) { fw.print(CSV_HEADER); fw.close(); }
+        _rotateFailCount = 0;
+      }
     }
   }
 
@@ -692,6 +777,101 @@ DayStat log_day_stat(const String &todayDate) {
 // ─── Парсит CSV-лог и возвращает JSON-массив для графика/экспорта ────────
 // Формат CSV: datetime;weight_kg;temp_c;humidity_pct;bat_v
 // Парсинг на char-буфере (без String аллокаций в цикле — защита от heap-фрагментации)
+// Стрим-версия: пишет JSON-массив прямо в Stream (без heap-аккумуляции).
+// Формат идентичен log_to_json(). На ESP8266 экономит ~4КБ heap.
+size_t log_stream_json(Stream &out, int maxRows) {
+#if defined(ESP8266)
+  if (maxRows > 50) maxRows = 50;
+#else
+  if (maxRows > 200) maxRows = 200;
+#endif
+  if (!_fs_ok() || !_fs_exists(LOG_FILE)) { out.print("[]"); return 0; }
+  File f = _fs_open_read(LOG_FILE);
+  if (!f) { out.print("[]"); return 0; }
+
+  int totalLines = 0;
+  while (f.available()) {
+    int c = f.read();
+    if (c < 0) break;
+    if (c == '\n') {
+      totalLines++;
+      if ((totalLines & 63) == 0) yield();
+    }
+  }
+  f.seek(0);
+
+  int dataLines = totalLines - 1;
+  int skipLines = (dataLines > maxRows) ? (dataLines - maxRows) : 0;
+
+  out.print('[');
+  bool first = true;
+  int lineIdx = 0;
+  char buf[128];
+  int pos = 0;
+  bool headerSkipped = false;
+  size_t rows = 0;
+
+  while (f.available()) {
+    int ch = f.read();
+    if (ch < 0) break;
+    if (ch == '\n' || ch == '\r') {
+      if (pos == 0) continue;
+      buf[pos] = '\0';
+      if (!headerSkipped) { headerSkipped = true; pos = 0; continue; }
+      if (pos > 8 && memcmp(buf, "datetime", 8) == 0) { pos = 0; continue; }
+      if (pos > 11 && memcmp(buf, "\xEF\xBB\xBF" "datetime", 11) == 0) { pos = 0; continue; }
+      if (lineIdx++ < skipLines) { pos = 0; continue; }
+
+      int s1 = -1, s2 = -1, s3 = -1, s4 = -1;
+      for (int i = 0; i < pos; i++) {
+        if (buf[i] == ';') {
+          if      (s1 < 0) s1 = i;
+          else if (s2 < 0) s2 = i;
+          else if (s3 < 0) s3 = i;
+          else if (s4 < 0) { s4 = i; break; }
+        }
+      }
+      if (s1 < 0 || s2 < 0 || s3 < 0 || s4 < 0) { pos = 0; continue; }
+
+      int wLen = s2 - s1 - 1;
+      int tLen = s3 - s2 - 1;
+      int hLen = s4 - s3 - 1;
+      int bLen = pos - s4 - 1;
+
+      float w = commaToFloat(buf + s1 + 1, wLen);
+      if (isnan(w) || isinf(w) || w < -5.0f || w > 500.0f) { pos = 0; continue; }
+
+      char cb[16];
+      if (!first) out.print(',');
+      out.print(F("{\"dt\":\""));
+      { char saveCh = buf[s1]; buf[s1] = '\0'; out.print(buf); buf[s1] = saveCh; }
+      out.print(F("\",\"w\":"));
+      out.print(commaToPoint(buf + s1 + 1, wLen, cb, sizeof(cb)));
+      out.print(F(",\"t\":"));
+      if (tLen <= 0) out.print(F("-99")); else out.print(commaToPoint(buf + s2 + 1, tLen, cb, sizeof(cb)));
+      out.print(F(",\"h\":"));
+      if (hLen <= 0) out.print(F("-99")); else out.print(commaToPoint(buf + s3 + 1, hLen, cb, sizeof(cb)));
+      out.print(F(",\"b\":"));
+      if (bLen <= 0) out.print('0'); else out.print(commaToPoint(buf + s4 + 1, bLen, cb, sizeof(cb)));
+      out.print('}');
+      first = false;
+      rows++;
+      pos = 0;
+      if ((rows & 15) == 0) {
+        yield();
+#if defined(ESP8266)
+        ESP.wdtFeed();
+#endif
+      }
+    } else {
+      if (pos < (int)sizeof(buf) - 1) buf[pos++] = (char)ch;
+    }
+  }
+  f.close();
+  out.print(']');
+  return rows;
+}
+
 String log_to_json(int maxRows) {
   // Ограничиваем максимум на ESP8266 — heap ~40 КБ, каждая строка ~80 байт JSON
 #if defined(ESP8266)
@@ -818,4 +998,25 @@ String log_read_backup() {
   String json = f.readString();
   f.close();
   return json;
+}
+
+size_t log_stream_backup(Stream &out) {
+  if (!_fs_ok() || !_fs_exists(BACKUP_FILE)) return 0;
+  File f = _fs_open_read(BACKUP_FILE);
+  if (!f) return 0;
+  // Стрим чанками в out — без аккумуляции в String (экономия ~4КБ heap на ESP8266).
+  uint8_t buf[256];
+  size_t total = 0;
+  while (f.available()) {
+    int n = f.read(buf, sizeof(buf));
+    if (n <= 0) break;
+    out.write(buf, n);
+    total += (size_t)n;
+    yield();
+#if defined(ESP8266)
+    ESP.wdtFeed();
+#endif
+  }
+  f.close();
+  return total;
 }
