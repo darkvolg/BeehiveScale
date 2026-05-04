@@ -4,7 +4,7 @@
 // Статические переменные для хранения настроек
 static float _alertDelta = 0.5f;
 static float _calibWeight = 1000.0f;
-static float _emaAlpha = 0.2f;
+static float _emaAlpha = 0.3f;  // дефолт: 0.3 = быстрый отклик ~10 сек, всё ещё фильтрует пчёл
 static bool _settingsLoaded = false;
 
 static bool is_eeprom_valid() {
@@ -28,7 +28,7 @@ void web_settings_init() {
   if (magic2 != EEPROM_MAGIC2_VALUE) {
     _alertDelta = 0.5f;
     _calibWeight = 1000.0f;
-    _emaAlpha = 0.2f;
+    _emaAlpha = 0.3f;
   } else {
     EEPROM.get(EEPROM_ADDR_ALERT_DELTA, _alertDelta);
     EEPROM.get(EEPROM_ADDR_CALIB_WEIGHT, _calibWeight);
@@ -36,7 +36,7 @@ void web_settings_init() {
 
     if (isnan(_alertDelta) || _alertDelta < 0.1f || _alertDelta > 10.0f) _alertDelta = 0.5f;
     if (isnan(_calibWeight) || _calibWeight < 100.0f || _calibWeight > 50000.0f) _calibWeight = 1000.0f;
-    if (isnan(_emaAlpha) || _emaAlpha < 0.05f || _emaAlpha > 0.9f) _emaAlpha = 0.2f;
+    if (isnan(_emaAlpha) || _emaAlpha < 0.05f || _emaAlpha > 0.9f) _emaAlpha = 0.3f;
   }
   _settingsLoaded = true;
 }

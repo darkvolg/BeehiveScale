@@ -31,25 +31,32 @@
 #include "Battery.h"
 #include "Logger.h"
 
-// HX711 на стандартных пинах ESP8266 (как у Bee_Lite v1.1, проверенный эталон).
-// GPIO14/12 — обычные GPIO с поддержкой INPUT_PULLUP, без boot-strap функций.
-// Прежняя распиновка (DT=GPIO16, SCK=GPIO1=TX) давала плавающий вес из-за
-// отсутствия pull-up на GPIO16 и UART-мусора на SCK при старте.
-#define DT_PIN          14   // D5 — HX711 DOUT
-#define SCK_PIN         12   // D6 — HX711 SCK
+// HX711 пины. По умолчанию D5/D6 (GPIO14/12) — стандарт ESP8266, как у Bee_Lite v1.1.
+// Для отладочного отката к старой распиновке (D0/TX) — раскомментировать LEGACY_HX711_PINS.
+#define LEGACY_HX711_PINS  // ← АКТИВНО: HX711 на D0/TX (физическая распиновка Геннадия 2026-05-04)
+
+#ifdef LEGACY_HX711_PINS
+  #define DT_PIN          16   // D0 — HX711 DOUT (старая распиновка, без pull-up)
+  #define SCK_PIN          1   // TX — HX711 SCK (старая распиновка, заблокирует Serial debug)
+#else
+  #define DT_PIN          14   // D5 — HX711 DOUT (новая стандартная распиновка)
+  #define SCK_PIN         12   // D6 — HX711 SCK
+#endif
 #define BUTTON_PIN       0   // D3 — boot-strap! Не держать при включении
 #define MENU_BTN_PIN     2   // D4 — boot-strap! Не держать при включении
 #define LCD_ADDR      0x27
 
 #define WEIGHT_SAVE_MS    300000UL
 #define WEIGHT_SAVE_THR     0.05f
-#define TARE_COUNT             4
-#define TARE_TIMEOUT_MS     5000UL
+#define TARE_COUNT             2   // 2 нажатия с подтверждением — защита от случайного тарирования
+#define TARE_TIMEOUT_MS     3000UL  // Окно для второго нажатия после первого (3 сек)
 #define MENU_SCREENS           8
 #define STABLE_BUF_SIZE        6
 #define STABLE_THR             0.02f
 #define STABLE_SAVE_MIN_MS 600000UL  // 10 мин — минимальный интервал между EEPROM-записями при стабилизации
 #define SPIKE_FILTER_KG      5.0f    // Отбросить показание если скачок > 5 кг
+#define ZERO_DEADBAND_KG     0.05f   // Auto-zero: всё что |вес| < 50г → показываем 0
+#define SCALE_READ_INTERVAL_MS 1500UL // Период чтения HX711 (баланс между откликом и нагрузкой)
 #define WDT_TIMEOUT_SEC       30
 #define AUTO_SLEEP_MS     180000UL  // 3 минуты бездействия → deep sleep
 
@@ -176,6 +183,12 @@ void setup() {
 
   lcd_init(lcd);
 
+#ifdef LEGACY_HX711_PINS
+  // Старая распиновка использует TX (GPIO1) как HX711 SCK.
+  // Закрываем Serial чтобы не было UART-мусора на линии clock.
+  Serial.flush();
+  Serial.end();
+#endif
   scale_init(scale, DT_PIN, SCK_PIN);
   sys.sensorReady = check_sensor(scale);
 
@@ -239,6 +252,17 @@ void setup() {
 #if defined(ESP8266)
   ESP.wdtEnable(8000);  // Включаем программный WDT обратно: 8 сек
 #endif
+
+  // Сбросить ISR-флаги кнопок: при boot D3 (GPIO0) и D4 (GPIO2) — boot-strap пины,
+  // на них происходят переходные процессы → FALLING-прерывания ловят ложные нажатия.
+  // Чистим флаги перед стартом loop, чтобы не было автотарирования при включении.
+  noInterrupts();
+  btnMain.irqFell = false;
+  btnMain.irqTime = 0;
+  btnMenu.irqFell = false;
+  btnMenu.irqTime = 0;
+  interrupts();
+
   Serial.println(F("[Setup] Done"));
 }
 
@@ -484,6 +508,18 @@ void handle_buttons() {
   static int pressCount = 0;
   static unsigned long lastPressTime = 0;
 
+  // Boot grace period: первые 2 секунды после старта игнорируем кнопки.
+  // GPIO0 (D3) и GPIO2 (D4) — boot-strap пины, могут давать ложные срабатывания
+  // ISR во время инициализации модулей (LCD, I2C, WiFi) и до устаканивания питания.
+  if (millis() < 2000UL) {
+    // На всякий случай ещё раз чистим ISR-флаги
+    noInterrupts();
+    btnMain.irqFell = false;
+    btnMenu.irqFell = false;
+    interrupts();
+    return;
+  }
+
   ButtonAction actMain = read_button(BUTTON_PIN, btnMain);
   ButtonAction actMenu = read_button(MENU_BTN_PIN, btnMenu);
 
@@ -506,10 +542,17 @@ void handle_buttons() {
     } else {
       pressCount++;
       lastPressTime = millis();
-      sys.needsRedraw = true;
       if (pressCount >= TARE_COUNT) {
+        // Подтверждено — выполняем тарирование
         perform_taring();
         pressCount = 0;
+      } else {
+        // Первое нажатие — показываем запрос подтверждения
+        lcd.clear();
+        lcd.setCursor(0, 0); lcd_print_padded(lcd, "Tara? Nazhmite ");
+        char buf[17];
+        snprintf(buf, sizeof(buf), "esche %d raz/3sek", TARE_COUNT - pressCount);
+        lcd.setCursor(0, 1); lcd_print_padded(lcd, buf);
       }
     }
   }
@@ -519,7 +562,13 @@ void handle_buttons() {
     sys.needsRedraw = true;
   }
   if (pressCount > 0 && millis() - lastPressTime > TARE_TIMEOUT_MS) {
+    // Таймаут — отменяем подтверждение
     pressCount = 0;
+    lcd.clear();
+    lcd.setCursor(0, 0); lcd_print_padded(lcd, "Tara: otmena    ");
+    lcd.setCursor(0, 1); lcd_print_padded(lcd, "                ");
+    { unsigned long _t=millis(); while(millis()-_t<800UL){app_wdt_reset();yield();} }
+    sys.needsRedraw = true;
   }
   static int menuPressCount = 0;
   static unsigned long lastMenuPressTime = 0;
@@ -570,10 +619,9 @@ void process_weight() {
   static int   stableBufCnt = 0;
   static bool  stableSaved  = false;
 
-  // 2500мс между чтениями — HX711@10Hz даёт независимые сэмплы каждые 100мс,
-  // get_units(5) занимает ~500мс. Пауза 2с между выборками снижает температурный
-  // дрейф датчика и даёт WebServer/OTA окно на обработку запросов.
-  if (millis() - lastReadTime < 2500UL) return;
+  // Период чтения HX711. 1500мс — компромисс между скоростью отклика UI
+  // и нагрузкой на CPU/WebServer. HX711@10Hz даёт независимые сэмплы каждые 100мс.
+  if (millis() - lastReadTime < SCALE_READ_INTERVAL_MS) return;
   lastReadTime = millis();
 
   // spikeRejectCnt перенесён наверх функции чтобы его можно было сбросить
@@ -592,8 +640,8 @@ void process_weight() {
     return;
   }
 
-  // --- Auto-zero deadband (0.001 kg) ---
-  if (fabsf(raw) < 0.001f) {
+  // --- Auto-zero deadband: |вес| < 50г показываем как 0 (убирает дрожание возле нуля) ---
+  if (fabsf(raw) < ZERO_DEADBAND_KG) {
     raw = 0.0f;
   }
 
@@ -777,7 +825,7 @@ void show_screen_num(int n) {
 void display_screen_weight() {
   char buf[24];
   lcd.setCursor(0, 0);
-  snprintf(buf, sizeof(buf), "Ves:%6.2f%ckg", sys.smoothedWeight, sys.weightStable ? '*' : ' ');
+  snprintf(buf, sizeof(buf), "Ves:%6.1f%ckg", sys.smoothedWeight, sys.weightStable ? '*' : ' ');
   lcd_print_padded(lcd, buf);
   lcd.setCursor(0, 1);
   if (sys.currentTime.valid) {
@@ -815,10 +863,10 @@ void display_screen_diff() {
   char buf[24];
   float diff = sys.smoothedWeight - sys.prevWeight;
   lcd.setCursor(0, 0);
-  snprintf(buf, sizeof(buf), "D:%+6.2fkg", diff);
+  snprintf(buf, sizeof(buf), "D:%+6.1fkg", diff);
   lcd_print_padded(lcd, buf);
   lcd.setCursor(0, 1);
-  snprintf(buf, sizeof(buf), "Pred:%5.2fkg", sys.prevWeight);
+  snprintf(buf, sizeof(buf), "Pred:%5.1fkg", sys.prevWeight);
   lcd_print_padded(lcd, buf);
 }
 
@@ -1377,7 +1425,9 @@ void check_auto_sleep() {
 void show_splash_screen() {
   lcd.clear();
   lcd.setCursor(0, 0); lcd_print_padded(lcd, " Vesy Pchelovod ");
-  lcd.setCursor(0, 1); lcd_print_padded(lcd, "   Versiya 4.1  ");
+  char verLine[17];
+  snprintf(verLine, sizeof(verLine), "  Versiya %s", FW_VERSION);
+  lcd.setCursor(0, 1); lcd_print_padded(lcd, verLine);
   { unsigned long _t0=millis(); while(millis()-_t0<1200UL){app_wdt_reset();yield();} }
 
   if (sys.sensorReady) {

@@ -601,7 +601,7 @@ input[type=checkbox]{width:auto}
       <div class="card-title">⚙ Параметры устройства</div>
       <div class="form-row"><label>Порог тревоги Telegram (кг, 0.1–10)</label><input type="number" id="cfg-alert" step="0.1" min="0.1" max="10" placeholder="0.5"></div>
       <div class="form-row"><label>Эталонный груз калибровки (г, 100–50000)</label><input type="number" id="cfg-calib" step="100" min="100" max="50000" placeholder="1000"></div>
-      <div class="form-row"><label>EMA сглаживание α (0.05–0.9)</label><input type="number" id="cfg-ema" step="0.05" min="0.05" max="0.9" placeholder="0.1"></div>
+      <div class="form-row"><label>Скорость отклика весов (0.1=медленно, 0.3=средне, 0.6=быстро)</label><input type="number" id="cfg-ema" step="0.05" min="0.05" max="0.9" placeholder="0.3"><div style="font-size:12px;color:var(--text3);margin-top:4px">EMA α-фильтр. <b>0.1</b> ≈ 30 сек до стабилизации (для улья, фильтрует пчёл). <b>0.3</b> ≈ 10 сек (рекомендуется). <b>0.6</b> ≈ 4 сек (для тестов/калибровки).</div></div>
       <div class="form-row"><label>Deep Sleep интервал (сек, 30–86400)</label><input type="number" id="cfg-sleep" step="60" min="30" max="86400" placeholder="900"></div>
       <div class="form-row"><label>Расписание замеров (HH:MM через пробел, до 8 времён)</label><input type="text" id="cfg-sched" placeholder="08:00 14:00 20:00" maxlength="60"></div>
       <div class="form-row"><label>Таймаут подсветки LCD (сек, 0=всегда)</label><input type="number" id="cfg-bl" step="10" min="0" max="3600" placeholder="30"></div>
@@ -616,7 +616,7 @@ input[type=checkbox]{width:auto}
       <div style="font-size:13px;color:var(--text3);line-height:2">
         <b style="color:var(--amber)">Порог тревоги</b> — изменение веса для уведомления в Telegram (роение, кража).<br>
         <b style="color:var(--amber)">Эталонный груз</b> — масса гири при калибровке HX711.<br>
-        <b style="color:var(--amber)">EMA α</b> — коэффициент фильтра: меньше = плавнее, медленнее реакция.<br>
+        <b style="color:var(--amber)">Скорость отклика</b> — коэффициент EMA-фильтра шума. <b>В улье ставь 0.1–0.2</b> (фильтрует прилёт/вылет пчёл). <b>Для тестов 0.5–0.6</b> (быстрый отклик).<br>
         <b style="color:var(--amber)">Deep Sleep</b> — интервал сна ESP. Используется если расписание не задано.<br>
         <b style="color:var(--amber)">Расписание</b> — конкретные времена пробуждения и записи лога (напр. 08:00 14:00 20:00). Если задано — приоритет над интервалом. Пустое поле = только интервал.<br>
         <b style="color:var(--amber)">Подсветка LCD</b> — 0 = всегда включена; иначе — таймаут без нажатий.
@@ -2051,7 +2051,7 @@ static void _handleLogJson() {
 static String _buildBackupJson(bool masked) {
   DynamicJsonDocument doc(768);
   doc["_type"] = "BeehiveScale_backup";
-  doc["_ver"]  = "4.1";
+  doc["_ver"]  = FW_VERSION;
 
   // Калибровка
   doc["calibFactor"]  = *_wd.calibFactor;
