@@ -3,7 +3,7 @@
 
 #define FW_VERSION_MAJOR 4
 #define FW_VERSION_MINOR 2
-#define FW_VERSION_PATCH 9
+#define FW_VERSION_PATCH 12
 
 #define _FW_STR_HELPER(x) #x
 #define _FW_STR(x) _FW_STR_HELPER(x)

@@ -33,7 +33,8 @@
 
 // HX711 пины. По умолчанию D5/D6 (GPIO14/12) — стандарт ESP8266, как у Bee_Lite v1.1.
 // Для отладочного отката к старой распиновке (D0/TX) — раскомментировать LEGACY_HX711_PINS.
-#define LEGACY_HX711_PINS  // ← АКТИВНО: HX711 на D0/TX (физическая распиновка Геннадия 2026-05-04)
+// 2026-05-04: переход на D5/D6 для Фазы 2 (DEEP_SLEEP) — D0 нужен под перемычку D0→RST для wake-from-sleep.
+// #define LEGACY_HX711_PINS  // OFF: HX711 на D5/D6, D0 свободен под wake-up
 
 #ifdef LEGACY_HX711_PINS
   #define DT_PIN          16   // D0 — HX711 DOUT (старая распиновка, без pull-up)
@@ -1375,11 +1376,12 @@ void check_auto_sleep() {
 
   Serial.println(F("[AutoSleep] 3 min idle — shutting down..."));
 
-  // Показываем сообщение на LCD
+  // Показываем сообщение на LCD (включаем подсветку — она могла быть выключена по таймауту)
+  lcd.backlight();
   lcd.clear();
   lcd.setCursor(0, 0); lcd_print_padded(lcd, "Auto sleep...   ");
   lcd.setCursor(0, 1); lcd_print_padded(lcd, "Btn to wake up  ");
-  { unsigned long _t0=millis(); while(millis()-_t0<1500UL){app_wdt_reset();yield();} }
+  { unsigned long _t0=millis(); while(millis()-_t0<3000UL){app_wdt_reset();yield();} }
 
   // Гасим подсветку LCD
   lcd.noBacklight();

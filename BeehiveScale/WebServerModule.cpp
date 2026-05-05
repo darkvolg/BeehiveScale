@@ -776,8 +776,8 @@ function nav(id) {
   document.querySelectorAll('.tab')[idx[id]].classList.add('active');
   if (id==='chart') renderCharts();
   if (id==='api')   refreshApiView();
-  if (id==='settings'||id==='tg') loadConfig();
-  if (id==='wifi') loadConfig();
+  if (id==='settings'||id==='tg') loadConfig(true);
+  if (id==='wifi') loadConfig(true);
   if (id==='calib') { fetchData(); }   // немедленно обновить cf-live, ofs-live, wiz-w
 }
 
@@ -1194,7 +1194,8 @@ function restoreBackup(inp){
 }
 
 // ── Load config ───────────────────────────────────────────────────────
-function loadConfig(){
+// silent=true — без toast (используется при переключении вкладок)
+function loadConfig(silent){
   fetch('/api/config').then(r=>r.json()).then(d=>{
     const setV=(id,v)=>{const el=document.getElementById(id);if(el&&v!==undefined)el.value=v;};
     setV('cfg-alert',d.alertDelta); setV('cfg-calib',d.calibWeight);
@@ -1208,7 +1209,8 @@ function loadConfig(){
     if(d.alertDelta) setText('tg-thresh',d.alertDelta+' кг');
     selWm(parseInt(d.wifiMode||0),true);
     if(d.wifiSsid) setV('wifi-ssid',d.wifiSsid);
-  }).catch(()=>{});
+    if(!silent) toast('Настройки загружены');
+  }).catch(()=>{if(!silent) toast('Нет связи',true);});
 }
 
 // ── Save settings ─────────────────────────────────────────────────────

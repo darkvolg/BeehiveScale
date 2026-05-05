@@ -82,8 +82,21 @@ void sleep_enter(uint64_t seconds) {
   }
   esp_deep_sleep_start();
 #elif defined(ESP8266)
+  // ESP8266 max deep sleep ~71 мин (32-битный мкс-таймер чипа). Передача большего значения
+  // даёт неопределённое поведение — ESP может вообще не проснуться. Cap на 70 мин с запасом.
+  // При длинном расписании (>70 мин до цели) — ESP проснётся, проверит RTC и снова уснёт.
+  const uint32_t MAX_SLEEP_SEC = 4200UL;  // 70 минут
   if (seconds > 0) {
-    ESP.deepSleep(seconds * 1000000ULL);
+    if (seconds > MAX_SLEEP_SEC) {
+      Serial.print(F("[Sleep] Capped from "));
+      Serial.print(seconds);
+      Serial.print(F(" to "));
+      Serial.print(MAX_SLEEP_SEC);
+      Serial.println(F(" sec (ESP8266 hw limit)"));
+      Serial.flush();
+      seconds = MAX_SLEEP_SEC;
+    }
+    ESP.deepSleep((uint64_t)seconds * 1000000ULL);
   } else {
     ESP.deepSleep(0);  // Бесконечный сон, пробуждение по RST
   }
